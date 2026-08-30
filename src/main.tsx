@@ -16,6 +16,14 @@ registerServiceWorker()
 // Chrome can fire the install prompt before React mounts, so capture it here.
 startInstallCapture()
 
+// Being installed is one of the signals Chrome weighs when deciding whether to
+// protect an origin's storage, but the request above already ran and was
+// answered before that was true. Ask once more the moment the app is
+// installed, rather than leaving the teacher to find the button herself.
+window.addEventListener('appinstalled', () => {
+  void requestPersistence()
+})
+
 const root = document.getElementById('root')
 if (!root) throw new Error('Missing #root element')
 

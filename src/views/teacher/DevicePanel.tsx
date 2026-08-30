@@ -1,4 +1,5 @@
 import { Button } from '../../components/Button'
+import { useInstallPrompt } from '../../hooks/useInstallPrompt'
 import { useStorageStatus } from '../../hooks/useStorageStatus'
 import { formatBytes } from '../../pwa/storage'
 
@@ -10,7 +11,7 @@ const STATE_COPY = {
   },
   'not-persisted': {
     title: 'Storage is not protected yet',
-    body: 'Chrome may clear this app’s data if the device runs low on space, which would delete the year’s attendance. Installing the app to the shelf usually earns the grant.',
+    body: 'Chrome may clear this app’s data if the device runs low on space, which would delete the year’s attendance. Installing the app usually earns the grant.',
     tone: 'warn',
   },
   unsupported: {
@@ -27,6 +28,7 @@ const STATE_COPY = {
  */
 export function DevicePanel() {
   const { status, requestAgain } = useStorageStatus()
+  const { installed } = useInstallPrompt()
 
   if (!status) {
     return <p style={{ color: 'var(--text-muted)' }}>Checking this device…</p>
@@ -34,6 +36,7 @@ export function DevicePanel() {
 
   const copy = STATE_COPY[status.state]
   const good = copy.tone === 'good'
+  const installedButUnprotected = installed && status.state === 'not-persisted'
 
   return (
     <div className="flex flex-col gap-6">
@@ -46,7 +49,9 @@ export function DevicePanel() {
       >
         <h3 className="text-lg font-semibold">{copy.title}</h3>
         <p className="mt-1.5" style={{ color: good ? 'var(--text)' : 'var(--warn-text)' }}>
-          {copy.body}
+          {installedButUnprotected
+            ? 'The app is installed, but Chrome has not granted the protection yet. It decides on its own signals and often says yes after the app has been used a few times. Try again below, and check back after a day of real use.'
+            : copy.body}
         </p>
         {status.state === 'not-persisted' && (
           <Button className="mt-4" onClick={() => void requestAgain()}>
