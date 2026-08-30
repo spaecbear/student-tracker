@@ -80,7 +80,7 @@ describe('buildYearExport', () => {
     expect(built.classNames).toEqual(['Period 3 Biology', 'Period 4 Chemistry'])
     expect(sessionsFile?.fileName).toBe('2025-2026_all-sessions.csv')
     expect(sessionsFile?.csv.split('\r\n')[0]).toBe(
-      'Class,Last Name,First Name,Grade,Student ID,Date,Check In,Check Out,Duration,Needs Review',
+      'Class,Last Name,First Name,Grade,Student ID,Date,Check In,Check Out,Duration',
     )
     expect(sessionsFile?.csv).toContain('Period 3 Biology,Alvarez,Maya,10,10442,2026-05-12,09:14')
     expect(sessionsFile?.csv).toContain('Period 4 Chemistry,Brooks,Dev,10,,2026-05-12,11:14')

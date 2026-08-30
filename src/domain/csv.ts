@@ -30,7 +30,6 @@ export const SESSION_CSV_HEADERS = [
   'Check In',
   'Check Out',
   'Duration',
-  'Needs Review',
 ] as const
 
 export const SUMMARY_CSV_HEADERS = [
@@ -70,9 +69,12 @@ function sortSessions(
 
 /**
  * One row per session, ordered by check-in. A session that crosses midnight
- * exports on its check-in date. Sessions still open at export time keep their
- * blank check-out rather than being invented a duration, and are flagged in
- * the Needs Review column so the gaps are visible in the spreadsheet.
+ * exports on its check-in date.
+ *
+ * A session with no check-out exports with both Check Out and Duration blank.
+ * Since the app never guesses a time, a blank duration is itself the flag —
+ * there is nothing a separate column would add, and the teacher view's review
+ * list is where those get resolved.
  */
 export function buildSessionRows(input: ExportInput): string[][] {
   const byStudent = studentIndex(input.students)
@@ -94,7 +96,6 @@ export function buildSessionRows(input: ExportInput): string[][] {
             session.durationMs ?? sessionDurationMs(session.checkInAt, session.checkOutAt, input.now),
           )
         : '',
-      session.needsReview ? 'yes' : '',
     ])
   }
   return rows

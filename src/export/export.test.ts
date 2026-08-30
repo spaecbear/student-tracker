@@ -183,7 +183,7 @@ describe('buildExport', () => {
       mode: 'sessions',
       now: TODAY,
     })
-    expect(built.rows[1]?.slice(5)).toEqual(['09:14', '', '', ''])
+    expect(built.rows[1]?.slice(5)).toEqual(['09:14', '', ''])
   })
 })
 

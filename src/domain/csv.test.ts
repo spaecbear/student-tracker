@@ -88,7 +88,6 @@ describe('buildSessionRows', () => {
       'Check In',
       'Check Out',
       'Duration',
-      'Needs Review',
     ])
     expect(rows[1]).toEqual([
       'Alvarez',
@@ -99,7 +98,6 @@ describe('buildSessionRows', () => {
       '09:14',
       '10:47',
       '01:33',
-      '',
     ])
     expect(rows[2]?.[7]).toBe('01:31')
   })
@@ -125,15 +123,14 @@ describe('buildSessionRows', () => {
     expect(rows[1]?.[3]).toBe('')
   })
 
-  it('flags rows still waiting on a check-out so they can be spotted', () => {
+  it('leaves a session with no check-out visibly blank rather than guessing', () => {
     const rows = buildSessionRows({
       students: [maya],
       sessions: [session('s', 'm', DAY1, null, { needsReview: true })],
       now: DAY1 + 7 * HOUR_MS,
     })
-    expect(rows[1]?.[8]).toBe('yes')
-    // No invented check-out or duration sits alongside the flag.
-    expect(rows[1]?.slice(6, 8)).toEqual(['', ''])
+    // The blank duration is the flag: no time is invented to fill the gap.
+    expect(rows[1]?.slice(4)).toEqual(['2026-09-15', '09:14', '', ''])
   })
 
   it('exports an open session with a blank check-out and duration', () => {
@@ -142,7 +139,7 @@ describe('buildSessionRows', () => {
       sessions: [session('s', 'm', DAY1, null)],
       now: DAY1 + HOUR_MS,
     })
-    expect(rows[1]?.slice(5)).toEqual(['09:14', '', '', ''])
+    expect(rows[1]?.slice(5)).toEqual(['09:14', '', ''])
   })
 
   it('exports a session that crosses midnight on its check-in date with its real duration', () => {
