@@ -1,0 +1,103 @@
+@import 'tailwindcss';
+
+/*
+  Two independent axes:
+    - data-theme  : the per-class accent color (set from Class.colorTheme)
+    - data-scheme : light or dark (system preference, with a manual override)
+  Every accent defines a light and a dark variant so the two never conflict.
+*/
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  color-scheme: light;
+
+  --surface: #f6f7f9;
+  --surface-raised: #ffffff;
+  --surface-sunken: #eceef2;
+  --border: #d8dce3;
+  --text: #14181f;
+  --text-muted: #5a6472;
+
+  --accent: #0f9d8f;
+  --accent-strong: #0b7a70;
+  --accent-soft: #d7f4f0;
+  --on-accent: #ffffff;
+
+  --danger: #b42318;
+  --danger-surface: #fdecec;
+  --danger-border: #f0a3a3;
+  --danger-text: #7a1c1c;
+  --on-danger: #ffffff;
+
+  --warn-surface: #fdf4e3;
+  --warn-border: #d9a441;
+  --warn-text: #6b4a05;
+}
+
+:root[data-scheme='dark'] {
+  color-scheme: dark;
+
+  --surface: #0f1319;
+  --surface-raised: #171c24;
+  --surface-sunken: #0a0d12;
+  --border: #2a3240;
+  --text: #f2f5f9;
+  --text-muted: #9aa5b4;
+
+  --accent: #2dd4bf;
+  --accent-strong: #5eead4;
+  --accent-soft: #10352f;
+  --on-accent: #04201c;
+
+  --danger: #e06a5f;
+  --danger-surface: #351514;
+  --danger-border: #7a2e28;
+  --danger-text: #ffc9c4;
+  --on-danger: #2a0b09;
+
+  --warn-surface: #322509;
+  --warn-border: #7d6115;
+  --warn-text: #f2d79a;
+}
+
+[data-theme='teal'] { --accent: #0f9d8f; --accent-strong: #0b7a70; --accent-soft: #d7f4f0; --on-accent: #ffffff; }
+[data-theme='indigo'] { --accent: #4f56d3; --accent-strong: #3b41ad; --accent-soft: #e0e2fb; --on-accent: #ffffff; }
+[data-theme='amber'] { --accent: #b4700a; --accent-strong: #8c5606; --accent-soft: #fbeacd; --on-accent: #ffffff; }
+[data-theme='rose'] { --accent: #c93a63; --accent-strong: #a12b4d; --accent-soft: #fbdde5; --on-accent: #ffffff; }
+[data-theme='violet'] { --accent: #7c3fd1; --accent-strong: #6230a8; --accent-soft: #eee0fb; --on-accent: #ffffff; }
+[data-theme='lime'] { --accent: #4d8a12; --accent-strong: #3b6b0d; --accent-soft: #e5f5cf; --on-accent: #ffffff; }
+
+:root[data-scheme='dark'][data-theme='teal'] { --accent: #2dd4bf; --accent-strong: #5eead4; --accent-soft: #10352f; --on-accent: #04201c; }
+:root[data-scheme='dark'][data-theme='indigo'] { --accent: #8b90f8; --accent-strong: #aeb2fb; --accent-soft: #1c1f47; --on-accent: #0b0d24; }
+:root[data-scheme='dark'][data-theme='amber'] { --accent: #f0b429; --accent-strong: #f7cf6b; --accent-soft: #3a2a06; --on-accent: #241a03; }
+:root[data-scheme='dark'][data-theme='rose'] { --accent: #f472a0; --accent-strong: #f9a2c0; --accent-soft: #3d1223; --on-accent: #290a16; }
+:root[data-scheme='dark'][data-theme='violet'] { --accent: #a97bf0; --accent-strong: #c4a4f6; --accent-soft: #2b1747; --on-accent: #180a2b; }
+:root[data-scheme='dark'][data-theme='lime'] { --accent: #a3d95b; --accent-strong: #c1e88d; --accent-soft: #21330c; --on-accent: #121d05; }
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Students tap these from a few feet away; never let a tap select text. */
+button {
+  font: inherit;
+  color: inherit;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

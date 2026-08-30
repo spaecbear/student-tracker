@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="icons/icon-192.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f9d8f" />
+    <meta name="description" content="Students check themselves in and out by tapping their name. Works offline; all data stays on the device." />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+    <title>Classroom Time Tracker</title>
+  </head>
+  <body>
+    <script>
+      // Applied before first paint so a dark room never gets a white flash.
+      // Mirrors resolveScheme() in src/themes/scheme.ts.
+      ;(function () {
+        try {
+          var stored = localStorage.getItem('timeTracker.colorScheme')
+          var dark =
+            stored === 'dark' ||
+            ((stored === null || stored === 'system') &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches)
+          document.documentElement.dataset.scheme = dark ? 'dark' : 'light'
+        } catch (error) {
+          document.documentElement.dataset.scheme = 'light'
+        }
+      })()
+    </script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
