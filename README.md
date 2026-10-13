@@ -3,10 +3,16 @@
 A single-device app where students check themselves in and out of a classroom by tapping their
 name. It records timestamps, computes durations, and exports attendance as CSV.
 
-**Everything stays on the device.** No server, no student accounts, no network calls, nothing sent
-anywhere. After the first load it works with the Wi-Fi off.
+> **This is the hosted branch (`supabase-netlify`).** Data lives in a Supabase database and the app
+> is served from Netlify, so records follow the teacher to any device and survive a cleared browser.
+> Teachers sign in with a username and password; students still just tap their names.
+> **Setup steps are in [SETUP.md](SETUP.md).** The sections below describe the original
+> local-only version (`main`) and are partly out of date on this branch.
 
-**Live app: <https://spaecbear.github.io/student-tracker/>**
+**Everything stays on the device** (original version). No server, no student accounts, no network
+calls, nothing sent anywhere. After the first load it works with the Wi-Fi off.
+
+**Live app (original): <https://spaecbear.github.io/student-tracker/>**
 
 Built as an installable PWA because the target device is a Chromebook, which cannot run a
 downloaded executable without developer mode.

@@ -41,7 +41,6 @@ function session(
     checkOutAt,
     durationMs: checkOutAt === null ? null : checkOutAt - checkInAt,
     needsReview: false,
-    openMarker: checkOutAt === null ? 1 : 0,
     ...over,
   }
 }

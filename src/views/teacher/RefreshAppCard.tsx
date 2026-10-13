@@ -60,7 +60,7 @@ export function RefreshAppCard() {
             className="flex list-disc flex-col gap-2 pl-5 text-sm"
             style={{ color: 'var(--text-muted)' }}
           >
-            <li>Kept: every class, student, and session on this device.</li>
+            <li>Kept: every class, student, and session (they live in your account, not on this device).</li>
             <li>Kept: your password and recovery code.</li>
             <li>Replaced: the app's own program files, downloaded again.</li>
             <li>

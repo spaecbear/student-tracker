@@ -1,10 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { IDBKeyRange, IDBFactory } from 'fake-indexeddb'
+import { registerTeacher, signInTeacher, switchTo } from '../test/helpers'
 import {
   AlreadyCheckedInError,
   ClassLimitReachedError,
   MAX_ACTIVE_CLASSES,
-  listTeachers,
   remainingClassSlots,
   checkIn,
   checkOut,
@@ -13,7 +12,6 @@ import {
   createManualSession,
   createStudent,
   createStudents,
-  createTeacher,
   deactivateStudent,
   deleteClassCascade,
   deleteSchoolYearSessions,
@@ -21,7 +19,6 @@ import {
   deleteStudentPermanently,
   findOpenSession,
   flagForReview,
-  getPrimaryTeacher,
   getSetting,
   getStudent,
   listAllOpenSessions,
@@ -37,36 +34,20 @@ import {
   updateClass,
   updateStudent,
 } from './index'
-import { resetDBConnectionForTests } from './schema'
 
 const YEAR = '2026-2027'
 const T0 = Date.UTC(2026, 8, 15, 13, 14) // 2026-09-15
 const MINUTE = 60_000
 const DAY = 86_400_000
 
-// Each test gets a brand-new in-memory IndexedDB rather than deleting the old
-// one, which would block on the still-open connection.
+/** The device's signed-in teacher, created once per test. */
+let signedIn: ReturnType<typeof signInTeacher> | null = null
 beforeEach(() => {
-  globalThis.indexedDB = new IDBFactory()
-  globalThis.IDBKeyRange = IDBKeyRange
-  resetDBConnectionForTests()
+  signedIn = null
 })
-
-/** The device's single teacher account, created once per test. */
 async function theTeacher() {
-  return (
-    (await getPrimaryTeacher()) ??
-    (await createTeacher(
-      {
-        displayName: 'Amanda',
-        passwordHash: 'hash',
-        salt: 'salt',
-        recoveryHash: 'recovery',
-        iterations: 1000,
-      },
-      T0,
-    ))
-  )
+  signedIn ??= signInTeacher('Amanda')
+  return signedIn
 }
 
 async function makeClass(name = 'Period 3 Biology') {
@@ -76,26 +57,6 @@ async function makeClass(name = 'Period 3 Biology') {
     T0,
   )
 }
-
-describe('teachers', () => {
-  const base = { passwordHash: 'h', salt: 's', recoveryHash: 'r', iterations: 1000 }
-
-  it('stores the account and returns it as the device owner', async () => {
-    const created = await createTeacher({ displayName: 'Amanda', ...base }, T0)
-    expect((await getPrimaryTeacher())?.id).toBe(created.id)
-  })
-
-  it('holds several accounts, oldest first', async () => {
-    await createTeacher({ displayName: 'Amanda', ...base }, T0)
-    await createTeacher({ displayName: 'Dave', ...base }, T0 + MINUTE)
-    expect((await listTeachers()).map((t) => t.displayName)).toEqual(['Amanda', 'Dave'])
-    expect((await getPrimaryTeacher())?.displayName).toBe('Amanda')
-  })
-
-  it('reports nothing before setup', async () => {
-    expect(await getPrimaryTeacher()).toBeUndefined()
-  })
-})
 
 describe('class limit', () => {
   it(`allows ${MAX_ACTIVE_CLASSES} active classes and refuses the next`, async () => {
@@ -140,16 +101,7 @@ describe('class limit', () => {
 
   it('counts the limit per teacher, so one cannot fill another\'s slots', async () => {
     const amanda = await theTeacher()
-    const dave = await createTeacher(
-      {
-        displayName: 'Dave',
-        passwordHash: 'h',
-        salt: 's',
-        recoveryHash: 'r',
-        iterations: 1000,
-      },
-      T0 + MINUTE,
-    )
+    const dave = registerTeacher('Dave')
     for (let i = 0; i < MAX_ACTIVE_CLASSES; i += 1) {
       await createClass(
         { teacherId: amanda.id, name: `Period ${i}`, colorTheme: 'teal', schoolYear: YEAR },
@@ -157,6 +109,8 @@ describe('class limit', () => {
       )
     }
     expect(await remainingClassSlots(YEAR, amanda.id)).toBe(0)
+
+    switchTo(dave)
     expect(await remainingClassSlots(YEAR, dave.id)).toBe(MAX_ACTIVE_CLASSES)
     await expect(
       createClass(
@@ -168,33 +122,22 @@ describe('class limit', () => {
 
   it('shows each teacher only their own classes', async () => {
     const amanda = await theTeacher()
-    const dave = await createTeacher(
-      {
-        displayName: 'Dave',
-        passwordHash: 'h',
-        salt: 's',
-        recoveryHash: 'r',
-        iterations: 1000,
-      },
-      T0 + MINUTE,
-    )
+    const dave = registerTeacher('Dave')
     await createClass(
       { teacherId: amanda.id, name: 'Biology', colorTheme: 'teal', schoolYear: YEAR },
       T0,
     )
+    switchTo(dave)
     await createClass(
       { teacherId: dave.id, name: 'Chemistry', colorTheme: 'rose', schoolYear: YEAR },
       T0,
     )
 
-    expect((await listClasses(YEAR, { teacherId: amanda.id })).map((c) => c.name)).toEqual([
-      'Biology',
-    ])
-    expect((await listClasses(YEAR, { teacherId: dave.id })).map((c) => c.name)).toEqual([
-      'Chemistry',
-    ])
-    // The student view is device-level and still sees whatever is set up.
-    expect(await listClasses(YEAR)).toHaveLength(2)
+    // Row-level security: each signed-in teacher sees only their own rows,
+    // whether or not the caller filters by teacher.
+    expect((await listClasses(YEAR)).map((c) => c.name)).toEqual(['Chemistry'])
+    switchTo(amanda)
+    expect((await listClasses(YEAR)).map((c) => c.name)).toEqual(['Biology'])
   })
 
   it('counts the limit per school year', async () => {
@@ -390,7 +333,6 @@ describe('sessions', () => {
     })
     const closed = await checkOut(open.id, T0 + 93 * MINUTE)
     expect(closed.durationMs).toBe(93 * MINUTE)
-    expect(closed.openMarker).toBe(0)
     expect(await findOpenSession(student.id)).toBeUndefined()
     expect(await listOpenSessions(cls.id)).toEqual([])
   })
@@ -546,7 +488,7 @@ describe('sessions', () => {
       checkOutAt: T0 - DAY + 45 * MINUTE,
     })
 
-    expect(added).toMatchObject({ durationMs: 45 * MINUTE, needsReview: false, openMarker: 0 })
+    expect(added).toMatchObject({ durationMs: 45 * MINUTE, needsReview: false })
     expect((await findOpenSession(student.id))?.id).toBe(live.id)
     expect(await listSessionsInRange(cls.id, T0 - DAY, T0 + MINUTE)).toHaveLength(2)
   })
@@ -564,13 +506,13 @@ describe('sessions', () => {
       checkInAt: T0,
     })
     const closed = await correctSession(open.id, { checkOutAt: T0 + 60 * MINUTE })
-    expect(closed).toMatchObject({ durationMs: 60 * MINUTE, openMarker: 0 })
+    expect(closed).toMatchObject({ durationMs: 60 * MINUTE })
 
     const shifted = await correctSession(open.id, { checkInAt: T0 + 10 * MINUTE })
     expect(shifted.durationMs).toBe(50 * MINUTE)
 
     const reopened = await correctSession(open.id, { checkOutAt: null }, T0)
-    expect(reopened).toMatchObject({ durationMs: null, openMarker: 1, needsReview: false })
+    expect(reopened).toMatchObject({ durationMs: null, needsReview: false })
     expect(await findOpenSession(student.id)).toBeDefined()
   })
 
@@ -591,7 +533,7 @@ describe('sessions', () => {
     // Clearing the check-out a week later cannot make it today's live session.
     const reopened = await correctSession(open.id, { checkOutAt: null }, T0 + 7 * DAY)
 
-    expect(reopened).toMatchObject({ openMarker: 0, needsReview: true })
+    expect(reopened).toMatchObject({ needsReview: true })
     expect(await findOpenSession(student.id)).toBeUndefined()
   })
 
@@ -634,8 +576,36 @@ describe('sessions', () => {
 
 describe('settings', () => {
   it('round-trips values and returns the fallback when unset', async () => {
+    await theTeacher()
     expect(await getSetting('soundEnabled', false)).toBe(false)
     await setSetting('soundEnabled', true)
     expect(await getSetting('soundEnabled', false)).toBe(true)
+  })
+
+  it('keeps settings separate for each teacher', async () => {
+    const amanda = await theTeacher()
+    await setSetting('soundEnabled', true)
+    switchTo(registerTeacher('Dave'))
+    expect(await getSetting('soundEnabled', false)).toBe(false)
+    switchTo(amanda)
+    expect(await getSetting('soundEnabled', false)).toBe(true)
+  })
+
+  it('reads a year of sessions past the 1,000-row page limit', async () => {
+    const cls = await makeClass()
+    const student = await createStudent(
+      { classId: cls.id, firstName: 'Maya', lastName: 'Alvarez', grade: '10' },
+      T0,
+    )
+    for (let i = 0; i < 1250; i += 1) {
+      await createManualSession({
+        studentId: student.id,
+        classId: cls.id,
+        schoolYear: YEAR,
+        checkInAt: T0 + i * MINUTE,
+        checkOutAt: T0 + i * MINUTE + 30_000,
+      })
+    }
+    expect(await listSessionsForSchoolYear(YEAR)).toHaveLength(1250)
   })
 })

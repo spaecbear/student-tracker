@@ -3,8 +3,15 @@ process.env.TZ = 'America/New_York'
 
 import '@testing-library/jest-dom/vitest'
 import 'fake-indexeddb/auto'
+import { beforeEach } from 'vitest'
+import { installFakeSupabase } from './src/test/fakeSupabase'
 
-// jsdom ships no SubtleCrypto; the app's password hashing needs a real one.
+// Every test starts with an empty in-memory Supabase and nobody signed in.
+beforeEach(() => {
+  installFakeSupabase()
+})
+
+// jsdom ships no SubtleCrypto; keep a real one available for tests that need it.
 import { webcrypto } from 'node:crypto'
 if (!globalThis.crypto?.subtle) {
   Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true })

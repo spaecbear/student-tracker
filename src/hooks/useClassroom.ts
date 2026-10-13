@@ -82,7 +82,7 @@ export function useClassroom(): Classroom {
     setError(
       cause instanceof StorageError
         ? cause
-        : new StorageError('Something went wrong reading local storage.', cause),
+        : new StorageError('Something went wrong talking to the server.', cause),
     )
   }, [])
 

@@ -35,7 +35,6 @@ function openSession(id: string, studentId: string, checkInAt: number): Session 
     checkOutAt: null,
     durationMs: null,
     needsReview: false,
-    openMarker: 1,
   }
 }
 
@@ -256,7 +255,6 @@ describe('StudentView', () => {
           checkOutAt: NOW - 60 * MINUTE,
           durationMs: 60 * MINUTE,
           needsReview: false,
-          openMarker: 0,
         },
       ],
     })

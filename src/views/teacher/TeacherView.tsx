@@ -1,6 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
 import { Button } from '../../components/Button'
-import { ErrorBanner } from '../../components/ErrorBanner'
 import type { Classroom } from '../../hooks/useClassroom'
 import type { TeacherAuth } from '../../hooks/useTeacherAuth'
 import type { AppSettings } from '../../hooks/useAppSettings'
@@ -10,7 +9,6 @@ import { ClassesPanel } from './ClassesPanel'
 import { ExportPanel } from './ExportPanel'
 import { SettingsPanel } from './SettingsPanel'
 import { PasswordGate } from './PasswordGate'
-import { RecoveryCodeNotice } from './RecoveryCodeNotice'
 import { RosterPanel } from './RosterPanel'
 import { SessionsPanel } from './SessionsPanel'
 
@@ -52,26 +50,6 @@ export function TeacherView({ auth, classroom, colorScheme, settings, onExit }: 
     classroom.refresh()
   }, [own, classroom])
 
-  if (auth.state === 'checking') {
-    return (
-      <main className="flex min-h-dvh items-center justify-center">
-        <p style={{ color: 'var(--text-muted)' }}>Loading…</p>
-      </main>
-    )
-  }
-
-  if (auth.state === 'error') {
-    return (
-      <main className="mx-auto flex min-h-dvh max-w-xl flex-col justify-center px-6">
-        <ErrorBanner
-          message="The teacher account could not be read."
-          detail={auth.error ?? undefined}
-          onDismiss={onExit}
-        />
-      </main>
-    )
-  }
-
   if (auth.state !== 'unlocked') {
     return <PasswordGate auth={auth} onCancel={onExit} />
   }
@@ -98,6 +76,7 @@ export function TeacherView({ auth, classroom, colorScheme, settings, onExit }: 
         </div>
         <div className="flex gap-3">
           <Button onClick={auth.lock}>Lock</Button>
+          <Button onClick={() => void auth.signOut()}>Sign out</Button>
           <Button variant="primary" onClick={onExit}>
             Back to class
           </Button>
@@ -128,7 +107,7 @@ export function TeacherView({ auth, classroom, colorScheme, settings, onExit }: 
       </nav>
 
       {tab === 'settings' ? (
-        <SettingsPanel colorScheme={colorScheme} settings={settings} />
+        <SettingsPanel colorScheme={colorScheme} settings={settings} auth={auth} />
       ) : tab === 'classes' ? (
         <ClassesPanel
           teacherId={auth.teacher?.id ?? ''}
@@ -153,9 +132,6 @@ export function TeacherView({ auth, classroom, colorScheme, settings, onExit }: 
         <ExportPanel teacherId={auth.teacher?.id ?? ''} activeClassId={workingClassId} />
       )}
 
-      {auth.recoveryCode && (
-        <RecoveryCodeNotice code={auth.recoveryCode} onAcknowledge={auth.acknowledgeRecoveryCode} />
-      )}
     </div>
   )
 }

@@ -1,36 +1,21 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
-import { createClass, createStudent, createTeacher } from './db'
-import { resetDBConnectionForTests } from './db/schema'
-import { createCredential } from './auth/password'
+import { createClass, createStudent } from './db'
 import { schoolYearForDate } from './domain'
+import { fakeSupabase } from './test/fakeSupabase'
+import { signInTeacher } from './test/helpers'
 
 const PASSWORD = 'Bio Room 214!'
-const ITERATIONS = 1000
 
 vi.mock('./audio/tones', () => ({ playCue: vi.fn() }))
 
 beforeEach(async () => {
-  globalThis.indexedDB = new IDBFactory()
-  globalThis.IDBKeyRange = IDBKeyRange
-  resetDBConnectionForTests()
   localStorage.clear()
 
   const now = Date.now()
-  const credential = await createCredential(PASSWORD, ITERATIONS)
-  const teacher = await createTeacher(
-    {
-      displayName: 'Amanda',
-      passwordHash: credential.passwordHash,
-      salt: credential.salt,
-      iterations: credential.iterations,
-      recoveryHash: credential.recoveryHash,
-    },
-    now,
-  )
+  const teacher = signInTeacher('Amanda', PASSWORD)
   const cls = await createClass(
     {
       teacherId: teacher.id,
@@ -111,9 +96,73 @@ describe('teacher access from the student view', () => {
     await user.type(await screen.findByLabelText('Password'), 'guess')
     await user.click(screen.getByRole('button', { name: 'Unlock' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('does not match')
+    expect(await screen.findByRole('alert')).toHaveTextContent('do not match')
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Add student' })).not.toBeInTheDocument(),
     )
+  })
+})
+
+describe('signing in to the device', () => {
+  it('shows the sign-in screen, not the class, when nobody is signed in', async () => {
+    fakeSupabase().signInAs(null)
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument()
+    expect(screen.queryByText('Alvarez, Maya')).not.toBeInTheDocument()
+  })
+
+  it('signs in with a username and password and shows that teacher’s class', async () => {
+    fakeSupabase().signInAs(null)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.type(await screen.findByLabelText('Username'), 'Amanda')
+    await user.type(screen.getByLabelText('Password'), PASSWORD)
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(await screen.findByRole('heading', { name: 'Period 3 Biology' })).toBeInTheDocument()
+    expect(await screen.findByText(/Maya/)).toBeInTheDocument()
+  })
+
+  it('says so plainly when the password is wrong', async () => {
+    fakeSupabase().signInAs(null)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.type(await screen.findByLabelText('Username'), 'amanda')
+    await user.type(screen.getByLabelText('Password'), 'nope-nope')
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('do not match')
+  })
+
+  it('creates an account and makes the teacher confirm the recovery code before going on', async () => {
+    fakeSupabase().signInAs(null)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Create a teacher account' }))
+    await user.type(screen.getByLabelText('Your name'), 'Dave Chen')
+    await user.type(screen.getByLabelText('Username'), 'dchen')
+    await user.type(screen.getByLabelText('New password'), 'chem-lab-2')
+    await user.click(screen.getByRole('button', { name: 'Create account' }))
+
+    expect(
+      await screen.findByRole('heading', { name: /write this recovery code down/i }),
+    ).toBeInTheDocument()
+    const done = screen.getByRole('button', { name: 'I have written it down' })
+    expect(done).toBeDisabled()
+    await user.click(screen.getByRole('checkbox'))
+    await user.click(done)
+    // Dave has no classes yet, so the empty state follows.
+    expect(await screen.findByRole('heading', { name: 'No class set up yet' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /write this recovery code down/i })).toBeNull()
+  })
+
+  it('rejects a short password before contacting the server', async () => {
+    fakeSupabase().signInAs(null)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Create a teacher account' }))
+    await user.type(screen.getByLabelText('Username'), 'dchen')
+    await user.type(screen.getByLabelText('New password'), 'abc')
+    await user.click(screen.getByRole('button', { name: 'Create account' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('at least 6')
+    expect(fakeSupabase().users.some((u) => u.email.startsWith('dchen'))).toBe(false)
   })
 })

@@ -4,21 +4,62 @@ import { useClassroom } from './hooks/useClassroom'
 import { useNow } from './hooks/useNow'
 import { useAppSettings } from './hooks/useAppSettings'
 import { useColorScheme } from './hooks/useColorScheme'
-import { useTeacherAuth } from './hooks/useTeacherAuth'
+import { useTeacherAuth, type TeacherAuth } from './hooks/useTeacherAuth'
 import { useTheme } from './hooks/useTheme'
 import { useYearEnd } from './hooks/useYearEnd'
 import { YearEndGate } from './views/YearEndGate'
 import { TeacherView } from './views/teacher/TeacherView'
 import { EmptyState } from './views/EmptyState'
 import { StudentView } from './views/StudentView'
+import { SignInScreen } from './views/SignInScreen'
+import { RecoveryCodeNotice } from './views/teacher/RecoveryCodeNotice'
 
 const CLOCK_INTERVAL_MS = 1000
 /** hh:mm needs no finer tick, and 30 cards re-rendering every second is waste. */
 const DURATION_INTERVAL_MS = 30_000
 
+/**
+ * Signed out: the sign-in screen. Signed in: the app proper. The class data
+ * hooks live below the sign-in gate, so nothing queries the server until there
+ * is a teacher to query as, and signing in as someone else starts them fresh.
+ */
 export default function App() {
-  const classroom = useClassroom()
   const auth = useTeacherAuth()
+
+  if (auth.state === 'checking') {
+    return (
+      <main className="flex min-h-dvh items-center justify-center">
+        <p style={{ color: 'var(--text-muted)' }}>Loading…</p>
+      </main>
+    )
+  }
+
+  if (auth.state === 'error') {
+    return (
+      <main className="mx-auto flex min-h-dvh max-w-xl flex-col justify-center px-6">
+        <ErrorBanner
+          message="Sign-in could not start."
+          detail={auth.error ?? undefined}
+          onRetry={() => window.location.reload()}
+        />
+      </main>
+    )
+  }
+
+  if (auth.state === 'signedOut' || !auth.teacher) return <SignInScreen auth={auth} />
+
+  return (
+    <>
+      <SignedInApp key={auth.teacher.id} auth={auth} />
+      {auth.recoveryCode && (
+        <RecoveryCodeNotice code={auth.recoveryCode} onAcknowledge={auth.acknowledgeRecoveryCode} />
+      )}
+    </>
+  )
+}
+
+function SignedInApp({ auth }: { auth: TeacherAuth }) {
+  const classroom = useClassroom()
   const colorScheme = useColorScheme()
   const settings = useAppSettings()
   const yearEnd = useYearEnd()
@@ -64,10 +105,10 @@ export default function App() {
     return (
       <main className="mx-auto flex min-h-dvh max-w-xl flex-col justify-center px-6">
         <ErrorBanner
-          message="This device's local storage could not be opened."
+          message="The class could not be loaded."
           detail={
             classroom.error?.message ??
-            'Attendance cannot be recorded until this is resolved.'
+            'Attendance cannot be recorded until the connection is back.'
           }
           onRetry={classroom.refresh}
         />

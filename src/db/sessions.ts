@@ -1,4 +1,14 @@
-import { DataError, newId, withDB } from './schema'
+import {
+  DataError,
+  db,
+  fetchAll,
+  isUniqueViolation,
+  newId,
+  run,
+  sessionToRow,
+  toSession,
+  type SessionRow,
+} from './schema'
 import { isSameLocalDay } from '../domain/time'
 import type { EpochMs, SchoolYear, Session } from './types'
 
@@ -12,64 +22,52 @@ export interface CheckInInput {
 /** Thrown when a check-in would create a second open session for one student. */
 export class AlreadyCheckedInError extends DataError {
   override readonly name = 'AlreadyCheckedInError'
-  readonly session: Session
+  readonly session: Session | undefined
 
-  constructor(session: Session) {
+  constructor(session?: Session) {
     super('That student already has an open session.')
     this.session = session
   }
 }
 
-function openRange(studentId: string): IDBKeyRange {
-  return IDBKeyRange.only([studentId, 1])
-}
-
 /**
  * Opens a session. Rejects if one is already open for the student — the UI
  * makes this unreachable (a checked-in card lives in the In column), but the
- * data layer refuses to create the ambiguity regardless.
+ * database refuses to create the ambiguity regardless, even across two devices.
  */
 export async function checkIn(input: CheckInInput): Promise<Session> {
-  return withDB('check in', async (db) => {
-    const tx = db.transaction('sessions', 'readwrite')
-    const existing = await tx.store.index('by-student-open').get(openRange(input.studentId))
-    if (existing) {
-      await tx.done
-      throw new AlreadyCheckedInError(existing)
-    }
-    const session: Session = {
-      id: newId(),
-      studentId: input.studentId,
-      classId: input.classId,
-      schoolYear: input.schoolYear,
-      checkInAt: input.checkInAt,
-      checkOutAt: null,
-      durationMs: null,
-      needsReview: false,
-      openMarker: 1,
-    }
-    await Promise.all([tx.store.put(session), tx.done])
-    return session
-  })
+  const session: Session = {
+    id: newId(),
+    studentId: input.studentId,
+    classId: input.classId,
+    schoolYear: input.schoolYear,
+    checkInAt: input.checkInAt,
+    checkOutAt: null,
+    durationMs: null,
+    needsReview: false,
+  }
+  try {
+    await run('check in', db().from('sessions').insert(sessionToRow(session)))
+  } catch (error) {
+    if (isUniqueViolation(error)) throw new AlreadyCheckedInError(await findOpenSession(input.studentId))
+    throw error
+  }
+  return session
 }
 
 /** Closes a session and stores its duration for fast export. */
 export async function checkOut(sessionId: string, checkOutAt: EpochMs): Promise<Session> {
-  return withDB('check out', async (db) => {
-    const tx = db.transaction('sessions', 'readwrite')
-    const existing = await tx.store.get(sessionId)
-    if (!existing) throw new Error(`No session with id ${sessionId}`)
-    const closed: Session = {
-      ...existing,
-      checkOutAt,
-      durationMs: checkOutAt - existing.checkInAt,
-      // Closing it is the review.
-      needsReview: false,
-      openMarker: 0,
-    }
-    await Promise.all([tx.store.put(closed), tx.done])
-    return closed
-  })
+  const existing = await getSession(sessionId)
+  if (!existing) throw new Error(`No session with id ${sessionId}`)
+  const closed: Session = {
+    ...existing,
+    checkOutAt,
+    durationMs: checkOutAt - existing.checkInAt,
+    // Closing it is the review.
+    needsReview: false,
+  }
+  await run('check out', db().from('sessions').update(sessionToRow(closed)).eq('id', sessionId))
+  return closed
 }
 
 /**
@@ -79,14 +77,14 @@ export async function checkOut(sessionId: string, checkOutAt: EpochMs): Promise<
  * the student can check in again. The teacher enters the real time later.
  */
 export async function flagForReview(sessionId: string): Promise<Session> {
-  return withDB('flag session for review', async (db) => {
-    const tx = db.transaction('sessions', 'readwrite')
-    const existing = await tx.store.get(sessionId)
-    if (!existing) throw new Error(`No session with id ${sessionId}`)
-    const flagged: Session = { ...existing, needsReview: true, openMarker: 0 }
-    await Promise.all([tx.store.put(flagged), tx.done])
-    return flagged
-  })
+  const existing = await getSession(sessionId)
+  if (!existing) throw new Error(`No session with id ${sessionId}`)
+  const flagged: Session = { ...existing, needsReview: true }
+  await run(
+    'flag session for review',
+    db().from('sessions').update({ needs_review: true }).eq('id', sessionId),
+  )
+  return flagged
 }
 
 export interface ManualSessionInput {
@@ -116,32 +114,47 @@ export async function createManualSession(input: ManualSessionInput): Promise<Se
     checkOutAt: input.checkOutAt,
     durationMs: input.checkOutAt === null ? null : input.checkOutAt - input.checkInAt,
     needsReview: input.checkOutAt === null,
-    openMarker: 0,
   }
-  await withDB('create manual session', (db) => db.put('sessions', session))
+  await run('create manual session', db().from('sessions').insert(sessionToRow(session)))
   return session
 }
 
-export function getSession(id: string): Promise<Session | undefined> {
-  return withDB('get session', (db) => db.get('sessions', id))
+export async function getSession(id: string): Promise<Session | undefined> {
+  const row = await run(
+    'get session',
+    db().from('sessions').select('*').eq('id', id).maybeSingle<SessionRow>(),
+  )
+  return row ? toSession(row) : undefined
 }
 
-export function findOpenSession(studentId: string): Promise<Session | undefined> {
-  return withDB('find open session', (db) =>
-    db.getFromIndex('sessions', 'by-student-open', openRange(studentId)),
+export async function findOpenSession(studentId: string): Promise<Session | undefined> {
+  const row = await run(
+    'find open session',
+    db()
+      .from('sessions')
+      .select('*')
+      .eq('student_id', studentId)
+      .is('check_out_at', null)
+      .eq('needs_review', false)
+      .maybeSingle<SessionRow>(),
   )
+  return row ? toSession(row) : undefined
 }
 
 /** Every currently open session in a class, for the In column. */
 export async function listOpenSessions(classId: string): Promise<Session[]> {
-  const rows = await withDB('list open sessions', (db) =>
-    db.getAllFromIndex(
-      'sessions',
-      'by-class-checkin',
-      IDBKeyRange.bound([classId, -Infinity], [classId, Infinity]),
-    ),
+  const rows = await fetchAll('list open sessions', (from, to) =>
+    db()
+      .from('sessions')
+      .select('*')
+      .eq('class_id', classId)
+      .is('check_out_at', null)
+      .eq('needs_review', false)
+      .order('id')
+      .range(from, to)
+      .returns<SessionRow[]>(),
   )
-  return rows.filter((s) => s.openMarker === 1)
+  return rows.map(toSession)
 }
 
 /**
@@ -153,20 +166,34 @@ export async function listSessionsInRange(
   fromAt: EpochMs,
   toAt: EpochMs,
 ): Promise<Session[]> {
-  const rows = await withDB('list sessions in range', (db) =>
-    db.getAllFromIndex(
-      'sessions',
-      'by-class-checkin',
-      IDBKeyRange.bound([classId, fromAt], [classId, toAt]),
-    ),
+  const rows = await fetchAll('list sessions in range', (from, to) =>
+    db()
+      .from('sessions')
+      .select('*')
+      .eq('class_id', classId)
+      .gte('check_in_at', fromAt)
+      .lte('check_in_at', toAt)
+      .order('check_in_at')
+      .order('id')
+      .range(from, to)
+      .returns<SessionRow[]>(),
   )
-  return rows.sort((a, b) => a.checkInAt - b.checkInAt)
+  return rows.map(toSession)
 }
 
 /** Active sessions across every class, used by the abandoned-session sweep on launch. */
 export async function listAllOpenSessions(): Promise<Session[]> {
-  const rows = await withDB('list all open sessions', (db) => db.getAll('sessions'))
-  return rows.filter((s) => s.openMarker === 1)
+  const rows = await fetchAll('list all open sessions', (from, to) =>
+    db()
+      .from('sessions')
+      .select('*')
+      .is('check_out_at', null)
+      .eq('needs_review', false)
+      .order('id')
+      .range(from, to)
+      .returns<SessionRow[]>(),
+  )
+  return rows.map(toSession)
 }
 
 /**
@@ -174,28 +201,40 @@ export async function listAllOpenSessions(): Promise<Session[]> {
  * Ordered oldest first, since the oldest is the one most likely forgotten.
  */
 export async function listSessionsNeedingReview(classId: string): Promise<Session[]> {
-  const rows = await withDB('list sessions needing review', (db) =>
-    db.getAllFromIndex(
-      'sessions',
-      'by-class-checkin',
-      IDBKeyRange.bound([classId, -Infinity], [classId, Infinity]),
-    ),
+  const rows = await fetchAll('list sessions needing review', (from, to) =>
+    db()
+      .from('sessions')
+      .select('*')
+      .eq('class_id', classId)
+      .eq('needs_review', true)
+      .order('check_in_at')
+      .order('id')
+      .range(from, to)
+      .returns<SessionRow[]>(),
   )
-  return rows.filter((s) => s.needsReview).sort((a, b) => a.checkInAt - b.checkInAt)
+  return rows.map(toSession)
 }
 
-export function listSessionsForSchoolYear(schoolYear: SchoolYear): Promise<Session[]> {
-  return withDB('list sessions for school year', (db) =>
-    db.getAllFromIndex('sessions', 'by-school-year', schoolYear),
+export async function listSessionsForSchoolYear(schoolYear: SchoolYear): Promise<Session[]> {
+  const rows = await fetchAll('list sessions for school year', (from, to) =>
+    db()
+      .from('sessions')
+      .select('*')
+      .eq('school_year', schoolYear)
+      .order('check_in_at')
+      .order('id')
+      .range(from, to)
+      .returns<SessionRow[]>(),
   )
+  return rows.map(toSession)
 }
 
 export type SessionCorrection = Pick<Session, 'checkInAt' | 'checkOutAt'>
 
 /**
  * Teacher-side correction of a session's times — the fix for a missed tap at
- * either end. Duration, the review flag, and the open marker are always
- * re-derived here so they cannot drift from the timestamps.
+ * either end. Duration and the review flag are always re-derived here so they
+ * cannot drift from the timestamps.
  *
  * Giving a session a check-out time resolves it. Clearing one hands it back:
  * it becomes active again if it belongs to today, and goes back on the review
@@ -206,36 +245,37 @@ export async function correctSession(
   patch: Partial<SessionCorrection>,
   now: EpochMs = Date.now(),
 ): Promise<Session> {
-  return withDB('correct session', async (db) => {
-    const tx = db.transaction('sessions', 'readwrite')
-    const existing = await tx.store.get(id)
-    if (!existing) throw new Error(`No session with id ${id}`)
-    const checkInAt = patch.checkInAt ?? existing.checkInAt
-    const checkOutAt = patch.checkOutAt === undefined ? existing.checkOutAt : patch.checkOutAt
-    const reopenedToday = checkOutAt === null && isSameLocalDay(checkInAt, now)
-    const updated: Session = {
-      ...existing,
-      checkInAt,
-      checkOutAt,
-      durationMs: checkOutAt === null ? null : checkOutAt - checkInAt,
-      needsReview: checkOutAt === null && !reopenedToday,
-      openMarker: reopenedToday ? 1 : 0,
-    }
-    await Promise.all([tx.store.put(updated), tx.done])
-    return updated
-  })
+  const existing = await getSession(id)
+  if (!existing) throw new Error(`No session with id ${id}`)
+  const checkInAt = patch.checkInAt ?? existing.checkInAt
+  const checkOutAt = patch.checkOutAt === undefined ? existing.checkOutAt : patch.checkOutAt
+  const reopenedToday = checkOutAt === null && isSameLocalDay(checkInAt, now)
+  const updated: Session = {
+    ...existing,
+    checkInAt,
+    checkOutAt,
+    durationMs: checkOutAt === null ? null : checkOutAt - checkInAt,
+    needsReview: checkOutAt === null && !reopenedToday,
+  }
+  try {
+    await run('correct session', db().from('sessions').update(sessionToRow(updated)).eq('id', id))
+  } catch (error) {
+    // Reopening would make a second active session for the same student.
+    if (isUniqueViolation(error)) throw new AlreadyCheckedInError(await findOpenSession(existing.studentId))
+    throw error
+  }
+  return updated
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  await withDB('delete session', (db) => db.delete('sessions', id))
+  await run('delete session', db().from('sessions').delete().eq('id', id))
 }
 
 /** Year-end purge. Only ever called after an export the teacher has confirmed. */
 export async function deleteSchoolYearSessions(schoolYear: SchoolYear): Promise<number> {
-  return withDB('purge school year sessions', async (db) => {
-    const tx = db.transaction('sessions', 'readwrite')
-    const keys = await tx.store.index('by-school-year').getAllKeys(schoolYear)
-    await Promise.all([...keys.map((key) => tx.store.delete(key)), tx.done])
-    return keys.length
-  })
+  const rows = await run(
+    'purge school year sessions',
+    db().from('sessions').delete().eq('school_year', schoolYear).select('id').returns<{ id: string }[]>(),
+  )
+  return rows.length
 }

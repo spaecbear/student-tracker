@@ -1,92 +1,123 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { User } from '@supabase/supabase-js'
+import { StorageError, type Teacher } from '../db'
 import {
-  StorageError,
-  createTeacher,
-  listTeachers,
-  updateTeacher,
-  type Teacher,
-} from '../db'
-import {
-  changePassword,
-  createCredential,
-  verifyPassword,
-  verifyRecoveryCode,
+  emailToUsername,
+  generateRecoveryCode,
+  isValidUsername,
+  normalizeUsername,
+  usernameToEmail,
 } from '../auth/password'
+import { getSupabase } from '../lib/supabase'
 
 /** The teacher view locks itself after this long without interaction. */
 export const AUTO_LOCK_MS = 5 * 60_000
 
-export type AuthState = 'checking' | 'setup' | 'locked' | 'unlocked' | 'error'
+/**
+ * - `checking`:  reading the saved session.
+ * - `signedOut`: nobody is signed in on this device; the sign-in screen shows.
+ * - `locked`:    a teacher is signed in (the class runs) but the teacher view
+ *                wants their password again.
+ * - `unlocked`:  the teacher view is open.
+ */
+export type AuthState = 'checking' | 'signedOut' | 'locked' | 'unlocked' | 'error'
 
 export interface TeacherAuth {
   state: AuthState
-  /** Every account on this device, for the sign-in picker. */
-  teachers: Teacher[]
-  /** The signed-in teacher, or null while locked. */
+  /** The teacher signed in on this device, locked or not; null when signed out. */
   teacher: Teacher | null
   error: string | null
-  /** Set once after an account is created or reset, for the teacher to write down. */
+  /** Set once after an account is created or the code is replaced, for the teacher to write down. */
   recoveryCode: string | null
-  createFirstAccount: (displayName: string, password: string) => Promise<boolean>
-  addAccount: (proof: string, displayName: string, password: string) => Promise<boolean>
-  unlock: (teacherId: string, password: string) => Promise<boolean>
-  resetWithRecoveryCode: (
-    teacherId: string,
-    code: string,
-    newPassword: string,
-  ) => Promise<boolean>
+  signUp: (displayName: string, username: string, password: string) => Promise<boolean>
+  signIn: (username: string, password: string) => Promise<boolean>
+  /** Re-checks the signed-in teacher's password to open the teacher view. */
+  unlock: (password: string) => Promise<boolean>
+  resetWithRecoveryCode: (username: string, code: string, newPassword: string) => Promise<boolean>
+  /** Replaces the recovery code with a fresh one. Needs the teacher view to be unlocked. */
+  replaceRecoveryCode: () => Promise<boolean>
   lock: () => void
+  signOut: () => Promise<void>
   acknowledgeRecoveryCode: () => void
   clearError: () => void
 }
 
+function toTeacher(user: User): Teacher {
+  const username = emailToUsername(user.email ?? '')
+  const name = (user.user_metadata as { display_name?: string } | undefined)?.display_name
+  return { id: user.id, username, displayName: name?.trim() || username }
+}
+
+/** Turns the few Auth messages teachers can actually hit into plain language. */
+function friendly(message: string): string {
+  if (/already registered|already exists/i.test(message)) {
+    return 'That username is taken. Pick another.'
+  }
+  if (/invalid login credentials/i.test(message)) return 'That username and password do not match.'
+  if (/email.*invalid|invalid.*email/i.test(message)) {
+    return 'The server rejected that username. Ask whoever set up the app (see the setup guide).'
+  }
+  return message
+}
+
 /**
- * Password gate for the teacher view.
+ * Teacher sign-in.
  *
- * A device can hold several accounts — a room shared by two teachers across
- * periods — and each one only ever sees its own classes. It re-locks on
- * inactivity, when the app is backgrounded, and whenever the student view is
- * shown, so an unattended Chromebook is never a way in.
+ * The device stays signed in so the student view can read and write the class;
+ * the teacher view re-asks for the password. It re-locks on inactivity, when
+ * the app is backgrounded, and whenever the student view is shown, so an
+ * unattended Chromebook is never a way into the roster.
  */
 export function useTeacherAuth(): TeacherAuth {
   const [state, setState] = useState<AuthState>('checking')
-  const [teachers, setTeachers] = useState<Teacher[]>([])
   const [teacher, setTeacher] = useState<Teacher | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [recoveryCode, setRecoveryCode] = useState<string | null>(null)
   const timerRef = useRef<number | null>(null)
 
   const fail = useCallback((cause: unknown, fallback: string) => {
-    setError(cause instanceof StorageError ? cause.message : fallback)
-  }, [])
-
-  const loadTeachers = useCallback(async (): Promise<Teacher[]> => {
-    const found = await listTeachers()
-    setTeachers(found)
-    return found
+    setError(
+      cause instanceof StorageError || cause instanceof Error ? cause.message : fallback,
+    )
   }, [])
 
   useEffect(() => {
     let cancelled = false
-    loadTeachers()
-      .then((found) => {
-        if (cancelled) return
-        // An account with no password hash is a half-finished setup, not a login.
-        setState(found.some((t) => t.passwordHash !== '') ? 'locked' : 'setup')
+    let unsubscribe: (() => void) | null = null
+    try {
+      const supabase = getSupabase()
+      supabase.auth
+        .getSession()
+        .then(({ data }) => {
+          if (cancelled) return
+          const user = data.session?.user
+          setTeacher(user ? toTeacher(user) : null)
+          setState(user ? 'locked' : 'signedOut')
+        })
+        .catch((cause: unknown) => {
+          if (cancelled) return
+          fail(cause, 'Could not read the saved sign-in.')
+          setState('error')
+        })
+      const { data } = supabase.auth.onAuthStateChange((event) => {
+        if (event === 'SIGNED_OUT') {
+          setTeacher(null)
+          setState('signedOut')
+        }
       })
-      .catch((cause: unknown) => {
-        if (cancelled) return
-        fail(cause, 'Could not read the teacher accounts.')
-        setState('error')
-      })
+      unsubscribe = () => data.subscription.unsubscribe()
+    } catch (cause) {
+      fail(cause, 'Could not start sign-in.')
+      setState('error')
+    }
     return () => {
       cancelled = true
+      unsubscribe?.()
     }
-  }, [loadTeachers, fail])
+  }, [fail])
 
   const lock = useCallback(() => {
     setState((current) => (current === 'unlocked' ? 'locked' : current))
-    setTeacher(null)
     setError(null)
   }, [])
 
@@ -114,141 +145,152 @@ export function useTeacherAuth(): TeacherAuth {
     }
   }, [state, lock])
 
-  const saveAccount = useCallback(
-    async (displayName: string, password: string): Promise<boolean> => {
-      const credential = await createCredential(password)
-      const fields = {
-        displayName,
-        passwordHash: credential.passwordHash,
-        salt: credential.salt,
-        iterations: credential.iterations,
-        recoveryHash: credential.recoveryHash,
-      }
-      // Reuse a half-finished account rather than stranding it alongside a new one.
-      const unfinished = (await listTeachers()).find((t) => t.passwordHash === '')
-      const saved = unfinished
-        ? await updateTeacher(unfinished.id, fields)
-        : await createTeacher(fields, Date.now())
+  /** Stores a fresh recovery code for the signed-in teacher and queues it to be shown. */
+  const issueRecoveryCode = useCallback(async (): Promise<boolean> => {
+    const code = generateRecoveryCode()
+    const { error: rpcError } = await getSupabase().rpc('set_recovery_code', { p_code: code })
+    if (rpcError) throw new StorageError(`Could not save the recovery code: ${rpcError.message}`, rpcError)
+    setRecoveryCode(code)
+    return true
+  }, [])
 
-      await loadTeachers()
-      setTeacher(saved)
-      setRecoveryCode(credential.recoveryCode)
-      setState('unlocked')
-      return true
-    },
-    [loadTeachers],
-  )
-
-  const createFirstAccount = useCallback(
-    async (displayName: string, password: string) => {
+  const signIn = useCallback(
+    async (username: string, password: string) => {
       setError(null)
       try {
-        return await saveAccount(displayName, password)
+        const { data, error: authError } = await getSupabase().auth.signInWithPassword({
+          email: usernameToEmail(username),
+          password,
+        })
+        if (authError || !data.user) {
+          setError(friendly(authError?.message ?? 'Could not sign in.'))
+          return false
+        }
+        setTeacher(toTeacher(data.user))
+        setState('unlocked')
+        return true
       } catch (cause) {
-        fail(cause, 'Could not save the password.')
+        fail(cause, 'Could not sign in.')
         return false
       }
     },
-    [saveAccount, fail],
+    [fail],
   )
 
-  /**
-   * Adds another teacher to this device. `proof` must be an existing account's
-   * password or recovery code: without it the sign-in screen would be a way
-   * around the very gate it is guarding.
-   */
-  const addAccount = useCallback(
-    async (proof: string, displayName: string, password: string) => {
+  const signUp = useCallback(
+    async (displayName: string, username: string, password: string) => {
       setError(null)
+      if (!isValidUsername(username)) {
+        setError('That username is not allowed.')
+        return false
+      }
       try {
-        const existing = await listTeachers()
-        const authorized = await existing.reduce(
-          async (matched, candidate) =>
-            (await matched) ||
-            (await verifyPassword(proof, candidate)) ||
-            (await verifyRecoveryCode(proof, candidate)),
-          Promise.resolve(false),
-        )
-        if (!authorized) {
+        const { data, error: authError } = await getSupabase().auth.signUp({
+          email: usernameToEmail(username),
+          password,
+          options: { data: { display_name: displayName.trim() } },
+        })
+        if (authError) {
+          setError(friendly(authError.message))
+          return false
+        }
+        if (!data.user || !data.session) {
           setError(
-            'That is not a password or recovery code for an account on this device. Ask the teacher who set it up.',
+            'The account was created but the server wants an email confirmation first. Turn off "Confirm email" in Supabase (see the setup guide).',
           )
           return false
         }
-        return await saveAccount(displayName, password)
+        setTeacher(toTeacher(data.user))
+        // The account exists from here on, so signing in already worked: a failure to
+        // save the code must not hide that. The teacher can make one in Settings.
+        try {
+          await issueRecoveryCode()
+        } catch (cause) {
+          fail(cause, 'Could not save the recovery code.')
+        }
+        setState('unlocked')
+        return true
       } catch (cause) {
         fail(cause, 'Could not create the account.')
         return false
       }
     },
-    [saveAccount, fail],
+    [fail, issueRecoveryCode],
   )
 
   const unlock = useCallback(
-    async (teacherId: string, password: string) => {
+    async (password: string) => {
       setError(null)
-      try {
-        const match = teachers.find((t) => t.id === teacherId)
-        if (!match) {
-          setError('Pick which teacher is signing in.')
-          return false
-        }
-        if (await verifyPassword(password, match)) {
-          setTeacher(match)
-          setState('unlocked')
-          return true
-        }
-        setError('That password does not match.')
-        return false
-      } catch (cause) {
-        fail(cause, 'Could not check the password.')
-        return false
-      }
+      if (!teacher) return false
+      return signIn(teacher.username, password)
     },
-    [teachers, fail],
+    [teacher, signIn],
   )
 
   const resetWithRecoveryCode = useCallback(
-    async (teacherId: string, code: string, newPassword: string) => {
+    async (username: string, code: string, newPassword: string) => {
       setError(null)
       try {
-        const match = teachers.find((t) => t.id === teacherId)
-        if (!match) {
-          setError('Pick which teacher is signing in.')
+        const { data, error: rpcError } = await getSupabase().rpc('reset_password_with_code', {
+          p_email: usernameToEmail(username),
+          p_code: code,
+          p_new_password: newPassword,
+        })
+        if (rpcError) {
+          setError(rpcError.message)
           return false
         }
-        if (!(await verifyRecoveryCode(code, match))) {
-          setError('That recovery code does not match.')
+        if (data !== true) {
+          setError('That username and recovery code do not match.')
           return false
         }
-        const credential = await changePassword(newPassword, match)
-        const saved = await updateTeacher(match.id, { passwordHash: credential.passwordHash })
-        await loadTeachers()
-        setTeacher(saved)
-        setState('unlocked')
-        return true
+        return await signIn(normalizeUsername(username), newPassword)
       } catch (cause) {
         fail(cause, 'Could not reset the password.')
         return false
       }
     },
-    [teachers, loadTeachers, fail],
+    [fail, signIn],
   )
+
+  const replaceRecoveryCode = useCallback(async () => {
+    setError(null)
+    try {
+      return await issueRecoveryCode()
+    } catch (cause) {
+      fail(cause, 'Could not make a new recovery code.')
+      return false
+    }
+  }, [fail, issueRecoveryCode])
+
+  const signOut = useCallback(async () => {
+    setError(null)
+    try {
+      await getSupabase().auth.signOut()
+    } catch (cause) {
+      fail(cause, 'Could not sign out.')
+      return
+    }
+    setTeacher(null)
+    setRecoveryCode(null)
+    setState('signedOut')
+  }, [fail])
 
   const acknowledgeRecoveryCode = useCallback(() => setRecoveryCode(null), [])
   const clearError = useCallback(() => setError(null), [])
 
   return {
     state,
-    teachers,
     teacher,
     error,
     recoveryCode,
-    createFirstAccount,
-    addAccount,
+    signUp,
+    signIn,
     unlock,
     resetWithRecoveryCode,
+    replaceRecoveryCode,
     lock,
+    signOut,
     acknowledgeRecoveryCode,
     clearError,
   }

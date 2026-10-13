@@ -1,49 +1,32 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   checkIn,
   createClass,
   createStudent,
-  createTeacher,
   flagForReview,
   getSession,
   listSessionsInRange,
   listStudents,
   type Class,
 } from '../../db'
-import { resetDBConnectionForTests } from '../../db/schema'
-import { createCredential } from '../../auth/password'
 import type { Classroom } from '../../hooks/useClassroom'
 import { TeacherView } from './TeacherView'
 import { useTeacherAuth } from '../../hooks/useTeacherAuth'
 import { useAppSettings } from '../../hooks/useAppSettings'
 import { useColorScheme } from '../../hooks/useColorScheme'
 import { schoolYearForDate } from '../../domain'
+import { fakeSupabase } from '../../test/fakeSupabase'
+import { registerTeacher, signInTeacher, switchTo } from '../../test/helpers'
 
 const PASSWORD = 'Bio Room 214!'
-const ITERATIONS = 1000
 
 let cls: Class
 
 beforeEach(async () => {
-  globalThis.indexedDB = new IDBFactory()
-  globalThis.IDBKeyRange = IDBKeyRange
-  resetDBConnectionForTests()
-
   const now = Date.now()
-  const credential = await createCredential(PASSWORD, ITERATIONS)
-  const teacher = await createTeacher(
-    {
-      displayName: 'Amanda',
-      passwordHash: credential.passwordHash,
-      salt: credential.salt,
-      iterations: credential.iterations,
-      recoveryHash: credential.recoveryHash,
-    },
-    now,
-  )
+  const teacher = signInTeacher('Amanda', PASSWORD)
   cls = await createClass(
     {
       teacherId: teacher.id,
@@ -107,7 +90,7 @@ describe('teacher gate', () => {
     render(<Harness />)
     await user.type(await screen.findByLabelText('Password'), 'guess')
     await user.click(screen.getByRole('button', { name: 'Unlock' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('does not match')
+    expect(await screen.findByRole('alert')).toHaveTextContent('do not match')
     expect(screen.queryByRole('button', { name: 'Add student' })).not.toBeInTheDocument()
   })
 
@@ -120,11 +103,11 @@ describe('teacher gate', () => {
     expect(await screen.findByRole('heading', { name: 'Teacher access' })).toBeInTheDocument()
   })
 
-  it('offers the recovery path', async () => {
+  it('lets a different teacher sign out of the device from the lock screen', async () => {
     const user = userEvent.setup()
     render(<Harness />)
-    await user.click(await screen.findByRole('button', { name: /forgot my password/i }))
-    expect(screen.getByLabelText('Recovery code')).toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: /sign out of this device/i }))
+    await waitFor(() => expect(fakeSupabase().currentUser).toBeNull())
   })
 })
 
@@ -365,20 +348,13 @@ describe('session correction', () => {
   })
 })
 
-describe('two teachers sharing one device', () => {
-  /** Dave joins the device; Amanda's Period 3 Biology already exists. */
+describe('teachers on separate accounts', () => {
+  const DAVE_PASSWORD = 'chem-lab-2'
+
+  /** Dave has his own account and class; Amanda's Period 3 Biology already exists. */
   async function addDave() {
-    const credential = await createCredential('chem-lab-2', ITERATIONS)
-    const dave = await createTeacher(
-      {
-        displayName: 'Dave',
-        passwordHash: credential.passwordHash,
-        salt: credential.salt,
-        iterations: credential.iterations,
-        recoveryHash: credential.recoveryHash,
-      },
-      Date.now() + 1000,
-    )
+    const dave = registerTeacher('Dave', DAVE_PASSWORD)
+    switchTo(dave)
     const chemistry = await createClass(
       {
         teacherId: dave.id,
@@ -395,33 +371,22 @@ describe('two teachers sharing one device', () => {
     return { dave, chemistry }
   }
 
-  async function signInAs(user: ReturnType<typeof userEvent.setup>, name: string, password: string) {
-    render(<Harness />)
-    const picker = await screen.findByLabelText('Teacher')
-    await user.selectOptions(picker, screen.getByRole('option', { name }))
-    await user.type(screen.getByLabelText('Password'), password)
+  /** Dave is the one signed in on the device; he unlocks the teacher view. */
+  async function unlockAsDave(user: ReturnType<typeof userEvent.setup>, room?: Classroom) {
+    render(<Harness {...(room ? { room } : {})} />)
+    await user.type(await screen.findByLabelText('Password'), DAVE_PASSWORD)
     await user.click(screen.getByRole('button', { name: 'Unlock' }))
   }
 
-  it('offers a teacher picker once there is more than one account', async () => {
-    await addDave()
-    render(<Harness />)
-    const picker = await screen.findByLabelText('Teacher')
-    expect(within(picker).getAllByRole('option').map((o) => o.textContent)).toEqual([
-      'Amanda',
-      'Dave',
-    ])
-  })
-
   it('shows each teacher only their own roster', async () => {
-    await addDave()
     await createStudent(
       { classId: cls.id, firstName: 'Maya', lastName: 'Alvarez', grade: '10' },
       Date.now(),
     )
+    await addDave()
 
     const user = userEvent.setup()
-    await signInAs(user, 'Dave', 'chem-lab-2')
+    await unlockAsDave(user)
 
     expect(await screen.findByRole('heading', { name: 'Period 4 Chemistry' })).toBeInTheDocument()
     expect(await screen.findByText('Brooks, Dev')).toBeInTheDocument()
@@ -432,7 +397,7 @@ describe('two teachers sharing one device', () => {
   it('lists only the signed-in teacher’s classes', async () => {
     await addDave()
     const user = userEvent.setup()
-    await signInAs(user, 'Dave', 'chem-lab-2')
+    await unlockAsDave(user)
     await screen.findByRole('heading', { name: 'Period 4 Chemistry' })
 
     await user.click(screen.getByRole('button', { name: 'Classes' }))
@@ -444,7 +409,7 @@ describe('two teachers sharing one device', () => {
   it('offers only their own classes for export', async () => {
     await addDave()
     const user = userEvent.setup()
-    await signInAs(user, 'Dave', 'chem-lab-2')
+    await unlockAsDave(user)
     await screen.findByRole('heading', { name: 'Period 4 Chemistry' })
 
     await user.click(screen.getByRole('button', { name: 'Export' }))
@@ -455,40 +420,27 @@ describe('two teachers sharing one device', () => {
   })
 
   it('does not fall through to another teacher’s class when the card wall shows it', async () => {
-    const { dave } = await addDave()
     await createStudent(
       { classId: cls.id, firstName: 'Maya', lastName: 'Alvarez', grade: '10' },
       Date.now(),
     )
+    await addDave()
 
-    // The device is showing Amanda's class; Dave signs in anyway.
+    // The card wall still holds Amanda's class when Dave unlocks.
     const user = userEvent.setup()
-    render(<Harness room={classroom({ activeClass: cls })} />)
-    const picker = await screen.findByLabelText('Teacher')
-    await user.selectOptions(picker, screen.getByRole('option', { name: 'Dave' }))
-    await user.type(screen.getByLabelText('Password'), 'chem-lab-2')
-    await user.click(screen.getByRole('button', { name: 'Unlock' }))
+    await unlockAsDave(user, classroom({ activeClass: cls }))
 
     expect(await screen.findByRole('heading', { name: 'Period 4 Chemistry' })).toBeInTheDocument()
     expect(screen.queryByText('Alvarez, Maya')).not.toBeInTheDocument()
-    expect(dave.id).not.toBe(cls.teacherId)
   })
 
   it('tells a brand-new teacher to make a class rather than showing someone else’s', async () => {
-    const credential = await createCredential('newbie-pass', ITERATIONS)
-    await createTeacher(
-      {
-        displayName: 'Sam',
-        passwordHash: credential.passwordHash,
-        salt: credential.salt,
-        iterations: credential.iterations,
-        recoveryHash: credential.recoveryHash,
-      },
-      Date.now() + 1000,
-    )
+    switchTo(registerTeacher('Sam', 'newbie-pass'))
 
     const user = userEvent.setup()
-    await signInAs(user, 'Sam', 'newbie-pass')
+    render(<Harness />)
+    await user.type(await screen.findByLabelText('Password'), 'newbie-pass')
+    await user.click(screen.getByRole('button', { name: 'Unlock' }))
 
     expect(await screen.findByText(/Create a class first/)).toBeInTheDocument()
     expect(screen.queryByText('Period 3 Biology')).not.toBeInTheDocument()

@@ -1,14 +1,11 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { getSetting } from '../db'
-import { resetDBConnectionForTests } from '../db/schema'
+import { signInTeacher } from '../test/helpers'
 import { DAILY_TOTAL_SETTING, SOUND_SETTING, useAppSettings } from './useAppSettings'
 
 beforeEach(() => {
-  globalThis.indexedDB = new IDBFactory()
-  globalThis.IDBKeyRange = IDBKeyRange
-  resetDBConnectionForTests()
+  signInTeacher()
 })
 
 describe('useAppSettings', () => {

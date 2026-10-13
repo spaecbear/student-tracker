@@ -4,6 +4,7 @@ import { Button } from '../../components/Button'
 import type { AppSettings } from '../../hooks/useAppSettings'
 import type { ColorScheme } from '../../hooks/useColorScheme'
 import type { SchemePreference } from '../../themes/scheme'
+import type { TeacherAuth } from '../../hooks/useTeacherAuth'
 import { DevicePanel } from './DevicePanel'
 import { InstallCard } from '../../components/InstallCard'
 import { RefreshAppCard } from './RefreshAppCard'
@@ -11,6 +12,7 @@ import { RefreshAppCard } from './RefreshAppCard'
 interface Props {
   colorScheme: ColorScheme
   settings: AppSettings
+  auth: TeacherAuth
 }
 
 const SCHEME_OPTIONS: ReadonlyArray<{ id: SchemePreference; label: string }> = [
@@ -19,7 +21,7 @@ const SCHEME_OPTIONS: ReadonlyArray<{ id: SchemePreference; label: string }> = [
   { id: 'dark', label: 'Dark' },
 ]
 
-export function SettingsPanel({ colorScheme, settings }: Props) {
+export function SettingsPanel({ colorScheme, settings, auth }: Props) {
   return (
     <div className="flex flex-col gap-6">
       <Section
@@ -79,6 +81,18 @@ export function SettingsPanel({ colorScheme, settings }: Props) {
           checked={settings.showDailyTotal}
           onChange={settings.setShowDailyTotal}
         />
+      </Section>
+
+      <Section
+        title="Account"
+        hint={`Signed in as ${auth.teacher?.username ?? ''}. The recovery code is the only way back in if you forget your password. Making a new one cancels the old one.`}
+      >
+        <Button onClick={() => void auth.replaceRecoveryCode()}>Make a new recovery code</Button>
+        {auth.error && (
+          <p role="alert" className="mt-3 text-sm font-medium" style={{ color: 'var(--danger)' }}>
+            {auth.error}
+          </p>
+        )}
       </Section>
 
       <InstallCard />

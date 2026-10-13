@@ -1,32 +1,24 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   checkIn,
   checkOut,
   createClass,
   createStudent,
-  createTeacher,
   type Class,
 } from '../../db'
-import { resetDBConnectionForTests } from '../../db/schema'
 import { formatDateISO, schoolYearForDate } from '../../domain'
 import { ExportPanel } from './ExportPanel'
+import { signInTeacher } from '../../test/helpers'
 
 const NOW = Date.now()
 const YEAR = schoolYearForDate(NOW)
 let cls: Class
 
 beforeEach(async () => {
-  globalThis.indexedDB = new IDBFactory()
-  globalThis.IDBKeyRange = IDBKeyRange
-  resetDBConnectionForTests()
-
-  const teacher = await createTeacher(
-    { displayName: 'Amanda', passwordHash: '', salt: '', iterations: 0, recoveryHash: '' },
-    NOW,
-  )
+  
+  const teacher = signInTeacher()
   cls = await createClass(
     { teacherId: teacher.id, name: 'Period 3 Biology', colorTheme: 'teal', schoolYear: YEAR },
     NOW,

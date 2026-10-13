@@ -3,12 +3,11 @@ import {
   checkOut,
   createClass,
   createStudents,
-  createTeacher,
   flagForReview,
-  getPrimaryTeacher,
   listClasses,
   type Class,
 } from '../db'
+import { getSupabase } from '../lib/supabase'
 import { MINUTE_MS, localTimeOnDay, schoolYearForDate, startOfLocalDay } from '../domain'
 import { THEME_KEYS } from '../themes'
 
@@ -84,19 +83,10 @@ export async function seedDemoData(options: SeedOptions = {}): Promise<SeedResul
   const schoolYear = schoolYearForDate(now)
   const random = makeRandom(20260915)
 
-  const teacher =
-    (await getPrimaryTeacher()) ??
-    (await createTeacher(
-      {
-        displayName: 'Amanda',
-        // Placeholder only — the real credential is set in the teacher view.
-        passwordHash: '',
-        salt: '',
-        recoveryHash: '',
-        iterations: 0,
-      },
-      now,
-    ))
+  // Seeds into whoever is signed in; row-level security would refuse anyone else's rows.
+  const { data } = await getSupabase().auth.getUser()
+  if (!data.user) throw new Error('Sign in before seeding demo data.')
+  const teacher = { id: data.user.id }
 
   const existing = await listClasses(schoolYear)
   const cls: Class =

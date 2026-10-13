@@ -1,85 +1,134 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { getPrimaryTeacher, listTeachers } from '../db'
-import { resetDBConnectionForTests } from '../db/schema'
+import { describe, expect, it, vi } from 'vitest'
+import { fakeSupabase } from '../test/fakeSupabase'
+import { registerTeacher, signInTeacher } from '../test/helpers'
 import { AUTO_LOCK_MS, useTeacherAuth } from './useTeacherAuth'
 
 const PASSWORD = 'Bio Room 214!'
 
-beforeEach(() => {
-  globalThis.indexedDB = new IDBFactory()
-  globalThis.IDBKeyRange = IDBKeyRange
-  resetDBConnectionForTests()
-})
-
-async function setUpAccount() {
+/** A brand-new device: nobody signed in yet. */
+async function freshDevice() {
   const view = renderHook(() => useTeacherAuth())
-  await waitFor(() => expect(view.result.current.state).toBe('setup'))
+  await waitFor(() => expect(view.result.current.state).toBe('signedOut'))
+  return view
+}
+
+async function signedUp() {
+  const view = await freshDevice()
   await act(async () => {
-    await view.result.current.createFirstAccount('Amanda', PASSWORD)
+    expect(await view.result.current.signUp('Amanda', 'amanda', PASSWORD)).toBe(true)
   })
   return view
 }
 
-/** The id of the account to sign in as, once the hook has loaded them. */
-function onlyTeacherId(view: { result: { current: { teachers: { id: string }[] } } }): string {
-  const id = view.result.current.teachers[0]?.id
-  if (!id) throw new Error('no teacher loaded')
-  return id
-}
-
 describe('useTeacherAuth', () => {
-  it('asks for setup when no password has been chosen yet', async () => {
-    const { result } = renderHook(() => useTeacherAuth())
-    await waitFor(() => expect(result.current.state).toBe('setup'))
+  it('asks for a sign-in when nobody is signed in on the device', async () => {
+    const { result } = await freshDevice()
     expect(result.current.teacher).toBeNull()
   })
 
-  it('stores a hashed password and hands back a recovery code once', async () => {
-    const { result } = await setUpAccount()
+  it('creates an account, signs in, and hands back a recovery code once', async () => {
+    const { result } = await signedUp()
     expect(result.current.state).toBe('unlocked')
+    expect(result.current.teacher).toMatchObject({ username: 'amanda', displayName: 'Amanda' })
     expect(result.current.recoveryCode).toMatch(/^[0-9A-Z]{4}(-[0-9A-Z]{4}){3}$/)
-
-    const stored = await getPrimaryTeacher()
-    expect(stored?.displayName).toBe('Amanda')
-    expect(stored?.passwordHash).not.toBe(PASSWORD)
-    expect(stored?.passwordHash).not.toBe('')
-    expect(stored?.salt).not.toBe('')
+    // Only a stored copy of the code exists on the server, never shown again.
+    expect(fakeSupabase().recoveryHashes.size).toBe(1)
 
     act(() => result.current.acknowledgeRecoveryCode())
     expect(result.current.recoveryCode).toBeNull()
   })
 
-  it('starts locked once an account exists', async () => {
-    await setUpAccount()
-    const { result } = renderHook(() => useTeacherAuth())
-    await waitFor(() => expect(result.current.state).toBe('locked'))
+  it('refuses a username that is taken', async () => {
+    registerTeacher('Amanda')
+    const { result } = await freshDevice()
+    await act(async () => {
+      expect(await result.current.signUp('Imposter', 'Amanda', 'whatever1')).toBe(false)
+    })
+    expect(result.current.error).toBe('That username is taken. Pick another.')
+    expect(result.current.state).toBe('signedOut')
   })
 
-  it('unlocks with the right password and refuses the wrong one', async () => {
-    await setUpAccount()
+  it('refuses a malformed username before asking the server', async () => {
+    const { result } = await freshDevice()
+    await act(async () => {
+      expect(await result.current.signUp('A', 'no spaces!', PASSWORD)).toBe(false)
+    })
+    expect(result.current.error).toBe('That username is not allowed.')
+    expect(fakeSupabase().users).toHaveLength(0)
+  })
+
+  it('still signs in when the recovery code could not be saved', async () => {
+    const { result } = await freshDevice()
+    const fake = fakeSupabase()
+    // Only saving the code fails; the account itself is created.
+    const spy = vi.spyOn(fake.recoveryHashes, 'set').mockImplementation(() => {
+      throw new Error('boom')
+    })
+    await act(async () => {
+      await result.current.signUp('Amanda', 'amanda', PASSWORD)
+    })
+    spy.mockRestore()
+    expect(result.current.state).toBe('unlocked')
+    expect(result.current.recoveryCode).toBeNull()
+  })
+
+  it('starts locked when the device is already signed in', async () => {
+    signInTeacher('Amanda')
     const { result } = renderHook(() => useTeacherAuth())
     await waitFor(() => expect(result.current.state).toBe('locked'))
+    expect(result.current.teacher?.displayName).toBe('Amanda')
+  })
 
-    const id = onlyTeacherId({ result })
+  it('signs in from the sign-in screen, and refuses a wrong password', async () => {
+    registerTeacher('Amanda', PASSWORD)
+    const { result } = await freshDevice()
     await act(async () => {
-      expect(await result.current.unlock(id, 'wrong')).toBe(false)
+      expect(await result.current.signIn('amanda', 'wrong')).toBe(false)
     })
-    expect(result.current.state).toBe('locked')
-    expect(result.current.error).toBe('That password does not match.')
+    expect(result.current.error).toBe('That username and password do not match.')
+    expect(result.current.state).toBe('signedOut')
 
     await act(async () => {
-      expect(await result.current.unlock(id, PASSWORD)).toBe(true)
+      expect(await result.current.signIn('AMANDA', PASSWORD)).toBe(true)
     })
     expect(result.current.state).toBe('unlocked')
   })
 
+  it('unlocks with the right password and refuses the wrong one', async () => {
+    signInTeacher('Amanda', PASSWORD)
+    const { result } = renderHook(() => useTeacherAuth())
+    await waitFor(() => expect(result.current.state).toBe('locked'))
+
+    await act(async () => {
+      expect(await result.current.unlock('wrong')).toBe(false)
+    })
+    expect(result.current.state).toBe('locked')
+    expect(result.current.error).toBe('That username and password do not match.')
+
+    await act(async () => {
+      expect(await result.current.unlock(PASSWORD)).toBe(true)
+    })
+    expect(result.current.state).toBe('unlocked')
+  })
+
+  it('reports a dropped connection instead of failing silently', async () => {
+    signInTeacher('Amanda', PASSWORD)
+    const { result } = renderHook(() => useTeacherAuth())
+    await waitFor(() => expect(result.current.state).toBe('locked'))
+    fakeSupabase().failWith = 'Failed to fetch'
+    await act(async () => {
+      expect(await result.current.unlock(PASSWORD)).toBe(false)
+    })
+    expect(result.current.error).toBe('Failed to fetch')
+    expect(result.current.state).toBe('locked')
+  })
+
   it('locks itself after the inactivity timeout', async () => {
-    // Set the account up on real timers: waitFor cannot make progress under
-    // fake ones. Swapping in fake timers and dispatching an interaction
-    // re-arms the auto-lock timeout on the fake clock.
-    const { result } = await setUpAccount()
+    // Sign in on real timers: waitFor cannot make progress under fake ones.
+    // Swapping in fake timers and dispatching an interaction re-arms the
+    // auto-lock timeout on the fake clock.
+    const { result } = await signedUp()
     expect(result.current.state).toBe('unlocked')
     vi.useFakeTimers()
     try {
@@ -102,7 +151,7 @@ describe('useTeacherAuth', () => {
   })
 
   it('restarts the inactivity timer on interaction', async () => {
-    const { result } = await setUpAccount()
+    const { result } = await signedUp()
     vi.useFakeTimers()
     try {
       act(() => {
@@ -120,7 +169,7 @@ describe('useTeacherAuth', () => {
   })
 
   it('locks when the app is backgrounded', async () => {
-    const { result } = await setUpAccount()
+    const { result } = await signedUp()
     act(() => {
       Object.defineProperty(document, 'visibilityState', {
         value: 'hidden',
@@ -135,106 +184,77 @@ describe('useTeacherAuth', () => {
     })
   })
 
-  it('refuses to add an account without proof of existing access', async () => {
-    await setUpAccount()
-    const { result } = renderHook(() => useTeacherAuth())
-    await waitFor(() => expect(result.current.state).toBe('locked'))
-
-    await act(async () => {
-      expect(await result.current.addAccount('not-the-password', 'Student', 'letmein')).toBe(
-        false,
-      )
-    })
-
-    // The whole point: this screen must not be a way around the gate.
-    expect(result.current.state).toBe('locked')
-    expect(result.current.teacher).toBeNull()
-    expect(result.current.error).toMatch(/not a password or recovery code/i)
-    expect(await listTeachers()).toHaveLength(1)
-  })
-
-  it('adds an account when an existing password is given as proof', async () => {
-    await setUpAccount()
-    const { result } = renderHook(() => useTeacherAuth())
-    await waitFor(() => expect(result.current.state).toBe('locked'))
-
-    await act(async () => {
-      expect(await result.current.addAccount(PASSWORD, 'Dave', 'chem-lab-2')).toBe(true)
-    })
-
-    expect(result.current.state).toBe('unlocked')
-    expect(result.current.teacher?.displayName).toBe('Dave')
-    expect(result.current.recoveryCode).toMatch(/^[0-9A-Z]{4}(-[0-9A-Z]{4}){3}$/)
-    expect((await listTeachers()).map((t) => t.displayName)).toEqual(['Amanda', 'Dave'])
-  })
-
-  it('accepts an existing recovery code as proof too', async () => {
-    const first = await setUpAccount()
-    const code = first.result.current.recoveryCode as string
-
-    const { result } = renderHook(() => useTeacherAuth())
-    await waitFor(() => expect(result.current.state).toBe('locked'))
-    await act(async () => {
-      expect(await result.current.addAccount(code, 'Dave', 'chem-lab-2')).toBe(true)
-    })
-    expect(result.current.teacher?.displayName).toBe('Dave')
-  })
-
-  it('lets each account sign in with its own password only', async () => {
-    await setUpAccount()
-    const adding = renderHook(() => useTeacherAuth())
-    await waitFor(() => expect(adding.result.current.state).toBe('locked'))
-    await act(async () => {
-      await adding.result.current.addAccount(PASSWORD, 'Dave', 'chem-lab-2')
-    })
-
-    const { result } = renderHook(() => useTeacherAuth())
-    await waitFor(() => expect(result.current.teachers).toHaveLength(2))
-    const amanda = result.current.teachers.find((t) => t.displayName === 'Amanda') as { id: string }
-    const dave = result.current.teachers.find((t) => t.displayName === 'Dave') as { id: string }
-
-    await act(async () => {
-      expect(await result.current.unlock(amanda.id, 'chem-lab-2')).toBe(false)
-      expect(await result.current.unlock(dave.id, 'chem-lab-2')).toBe(true)
-    })
-    expect(result.current.teacher?.displayName).toBe('Dave')
-  })
-
-  it('forgets who was signed in when it locks', async () => {
-    const { result } = await setUpAccount()
-    expect(result.current.teacher).not.toBeNull()
+  it('stays signed in when it locks, so the class keeps running', async () => {
+    const { result } = await signedUp()
     act(() => result.current.lock())
-    expect(result.current.teacher).toBeNull()
     expect(result.current.state).toBe('locked')
+    expect(result.current.teacher?.username).toBe('amanda')
+    expect(fakeSupabase().currentUser).not.toBeNull()
+  })
+
+  it('signs out of the device entirely', async () => {
+    const { result } = await signedUp()
+    await act(async () => {
+      await result.current.signOut()
+    })
+    expect(result.current.state).toBe('signedOut')
+    expect(result.current.teacher).toBeNull()
+    expect(fakeSupabase().currentUser).toBeNull()
   })
 
   it('resets the password with the recovery code, and rejects a wrong code', async () => {
-    const first = await setUpAccount()
+    const first = await signedUp()
     const code = first.result.current.recoveryCode as string
+    await act(async () => {
+      await first.result.current.signOut()
+    })
 
-    const { result } = renderHook(() => useTeacherAuth())
-    await waitFor(() => expect(result.current.state).toBe('locked'))
-
-    const id = onlyTeacherId({ result })
     await act(async () => {
       expect(
-        await result.current.resetWithRecoveryCode(id, 'AAAA-BBBB-CCCC-DDDD', 'newpass'),
+        await first.result.current.resetWithRecoveryCode('amanda', 'AAAA-BBBB-CCCC-DDDD', 'newpass'),
       ).toBe(false)
     })
-    expect(result.current.error).toBe('That recovery code does not match.')
-    expect(result.current.state).toBe('locked')
+    expect(first.result.current.error).toBe('That username and recovery code do not match.')
+    expect(first.result.current.state).toBe('signedOut')
 
     await act(async () => {
-      expect(await result.current.resetWithRecoveryCode(id, code, 'newpass')).toBe(true)
+      // Written down in lower case with spaces: still accepted.
+      expect(
+        await first.result.current.resetWithRecoveryCode(
+          'Amanda',
+          code.toLowerCase().replaceAll('-', ' '),
+          'newpass',
+        ),
+      ).toBe(true)
     })
-    expect(result.current.state).toBe('unlocked')
+    expect(first.result.current.state).toBe('unlocked')
 
-    const reopened = renderHook(() => useTeacherAuth())
-    await waitFor(() => expect(reopened.result.current.state).toBe('locked'))
-    const reopenedId = onlyTeacherId(reopened)
     await act(async () => {
-      expect(await reopened.result.current.unlock(reopenedId, PASSWORD)).toBe(false)
-      expect(await reopened.result.current.unlock(reopenedId, 'newpass')).toBe(true)
+      await first.result.current.signOut()
+    })
+    await act(async () => {
+      expect(await first.result.current.signIn('amanda', PASSWORD)).toBe(false)
+      expect(await first.result.current.signIn('amanda', 'newpass')).toBe(true)
+    })
+  })
+
+  it('replaces the recovery code, which cancels the old one', async () => {
+    const first = await signedUp()
+    const oldCode = first.result.current.recoveryCode as string
+    act(() => first.result.current.acknowledgeRecoveryCode())
+
+    await act(async () => {
+      expect(await first.result.current.replaceRecoveryCode()).toBe(true)
+    })
+    const newCode = first.result.current.recoveryCode as string
+    expect(newCode).not.toBe(oldCode)
+
+    await act(async () => {
+      await first.result.current.signOut()
+    })
+    await act(async () => {
+      expect(await first.result.current.resetWithRecoveryCode('amanda', oldCode, 'newpass')).toBe(false)
+      expect(await first.result.current.resetWithRecoveryCode('amanda', newCode, 'newpass')).toBe(true)
     })
   })
 })

@@ -142,7 +142,7 @@ export function StudentView({
 
       {classroom.error && (
         <ErrorBanner
-          message="Something went wrong saving to this device."
+          message="Something went wrong saving. Check the connection and try again."
           detail={classroom.error.message}
           onRetry={classroom.refresh}
           onDismiss={classroom.dismissError}

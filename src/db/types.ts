@@ -5,17 +5,11 @@ export type EpochMs = number
 export type SchoolYear = string
 
 export interface Teacher {
+  /** The Supabase Auth user id. */
   id: string
   displayName: string
-  /** PBKDF2-derived key, base64. */
-  passwordHash: string
-  /** Random salt, base64. */
-  salt: string
-  /** PBKDF2 iteration count in force when the hash was derived. */
-  iterations: number
-  /** Hash of the printable recovery code, base64. */
-  recoveryHash: string
-  createdAt: EpochMs
+  /** What they type to sign in. Lowercase. */
+  username: string
 }
 
 export interface Class {
@@ -43,18 +37,11 @@ export interface Student {
 }
 
 /**
- * IndexedDB cannot index `null`, so an open session would fall out of a
- * [studentId, checkOutAt] index entirely. `openMarker` is a stored mirror of
- * "is this the student's *active* session" (1 = active, 0 = not) so the lookup
- * stays indexed. It is maintained exclusively by the functions in
- * `db/sessions.ts`.
- *
- * Note this is not simply `checkOutAt === null`: a session abandoned on an
- * earlier day is still unclosed, but is no longer the student's active one —
- * see `needsReview`.
+ * A student's *active* session is one with no check-out that has not been
+ * flagged `needsReview`. A session abandoned on an earlier day is still
+ * unclosed, but is no longer the student's active one. The database enforces
+ * at most one active session per student.
  */
-export type OpenMarker = 0 | 1
-
 export interface Session {
   id: string
   studentId: string
@@ -70,10 +57,9 @@ export interface Session {
    * enter the real one.
    */
   needsReview: boolean
-  openMarker: OpenMarker
 }
 
-/** Small key/value store for app-level state (theme, sound, flags). */
+/** Small per-teacher key/value store for app-level state (sound, active class, flags). */
 export interface SettingRecord {
   key: string
   value: unknown

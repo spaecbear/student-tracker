@@ -1,55 +1,13 @@
-import {
-  openDB,
-  type DBSchema,
-  type IDBPDatabase,
-  type IDBPTransaction,
-  type StoreNames,
-} from 'idb'
-import type { Class, SettingRecord, Session, Student, Teacher } from './types'
-
-export const DB_NAME = 'classroom-time-tracker'
-export const DB_VERSION = 2
-
-export interface TrackerDB extends DBSchema {
-  teachers: {
-    key: string
-    value: Teacher
-  }
-  classes: {
-    key: string
-    value: Class
-    indexes: { 'by-school-year': string }
-  }
-  students: {
-    key: string
-    value: Student
-    indexes: { 'by-class': string }
-  }
-  sessions: {
-    key: string
-    value: Session
-    indexes: {
-      /** Date-range export within a class. */
-      'by-class-checkin': [string, number]
-      /** Open-session lookup; see OpenMarker in types.ts. */
-      'by-student-open': [string, number]
-      /** Year-end purge and year detection. */
-      'by-school-year': string
-    }
-  }
-  settings: {
-    key: string
-    value: SettingRecord
-  }
-}
+import { getSupabase } from '../lib/supabase'
+import type { Class, EpochMs, Session, Student } from './types'
 
 /**
  * Base class for deliberate, expected data-layer rejections (as opposed to
- * storage failures). `withDB` lets these through unwrapped.
+ * storage failures). `run` lets these through unwrapped.
  */
 export class DataError extends Error {}
 
-/** Thrown for any storage failure so callers can surface it instead of swallowing it. */
+/** Thrown for any storage or network failure so callers can surface it instead of swallowing it. */
 export class StorageError extends Error {
   override readonly name = 'StorageError'
 
@@ -58,101 +16,166 @@ export class StorageError extends Error {
   }
 }
 
-let dbPromise: Promise<IDBPDatabase<TrackerDB>> | null = null
-
-function createMigrations(
-  db: IDBPDatabase<TrackerDB>,
-  oldVersion: number,
-  transaction: IDBPTransaction<TrackerDB, StoreNames<TrackerDB>[], 'versionchange'>,
-): void {
-  if (oldVersion < 1) {
-    db.createObjectStore('teachers', { keyPath: 'id' })
-
-    const classes = db.createObjectStore('classes', { keyPath: 'id' })
-    classes.createIndex('by-school-year', 'schoolYear')
-
-    const students = db.createObjectStore('students', { keyPath: 'id' })
-    students.createIndex('by-class', 'classId')
-
-    const sessions = db.createObjectStore('sessions', { keyPath: 'id' })
-    sessions.createIndex('by-class-checkin', ['classId', 'checkInAt'])
-    sessions.createIndex('by-student-open', ['studentId', 'openMarker'])
-    sessions.createIndex('by-school-year', 'schoolYear')
-
-    db.createObjectStore('settings', { keyPath: 'key' })
-  }
-
-  if (oldVersion === 1) {
-    // v1 guessed a check-out time for abandoned sessions and recorded it as
-    // `autoClosed`. v2 stops guessing: such a session stays open and is flagged
-    // for the teacher instead. Any session v1 auto-closed keeps its (guessed)
-    // time but is flagged, so those guesses surface for correction rather than
-    // silently becoming fact.
-    void transaction
-      .objectStore('sessions')
-      .openCursor()
-      .then(async function migrate(cursor): Promise<void> {
-        if (!cursor) return
-        const legacy = cursor.value as Session & { autoClosed?: boolean }
-        const { autoClosed, ...rest } = legacy
-        await cursor.update({ ...rest, needsReview: autoClosed === true })
-        return migrate(await cursor.continue())
-      })
-  }
+interface QueryResult<T> {
+  data: T | null
+  error: { message: string; code?: string } | null
 }
 
-export function getDB(): Promise<IDBPDatabase<TrackerDB>> {
-  if (!dbPromise) {
-    dbPromise = openDB<TrackerDB>(DB_NAME, DB_VERSION, {
-      upgrade(db, oldVersion, _newVersion, transaction) {
-        createMigrations(db, oldVersion, transaction)
-      },
-      blocked() {
-        console.warn('Database upgrade blocked by another open tab.')
-      },
-      terminated() {
-        // Connection died (eviction, crash). Force a reopen on next access.
-        dbPromise = null
-      },
-    }).catch((error: unknown) => {
-      dbPromise = null
-      throw new StorageError('Could not open the local database.', error)
-    })
-  }
-  return dbPromise
-}
-
-/** Runs `fn` and rewraps any storage failure as a StorageError with context. */
-export async function withDB<T>(
-  description: string,
-  fn: (db: IDBPDatabase<TrackerDB>) => Promise<T>,
-): Promise<T> {
-  const db = await getDB()
+/** Awaits a Supabase query and rewraps any failure as a StorageError with context. */
+export async function run<T>(description: string, query: PromiseLike<QueryResult<T>>): Promise<T> {
+  let result: QueryResult<T>
   try {
-    return await fn(db)
-  } catch (error) {
-    if (error instanceof StorageError || error instanceof DataError) throw error
-    throw new StorageError(`Storage operation failed: ${description}`, error)
+    result = await query
+  } catch (cause) {
+    throw new StorageError(`Could not reach the server: ${description}`, cause)
   }
+  if (result.error) {
+    throw new StorageError(`${description} failed: ${result.error.message}`, result.error)
+  }
+  return result.data as T
 }
 
-/** Closes the cached connection, e.g. before a version upgrade or in tests. */
-export async function closeDB(): Promise<void> {
-  const pending = dbPromise
-  dbPromise = null
-  if (!pending) return
-  try {
-    ;(await pending).close()
-  } catch {
-    // Already closed or never opened; nothing to release.
-  }
+/** True for the Postgres "unique constraint violated" error. */
+export function isUniqueViolation(error: unknown): boolean {
+  const cause = error instanceof StorageError ? error.cause : error
+  return (cause as { code?: string } | null)?.code === '23505'
 }
 
-/** Test-only: drops the cached connection so a fresh DB can be opened. */
-export function resetDBConnectionForTests(): void {
-  dbPromise = null
+export function db() {
+  return getSupabase()
 }
 
 export function newId(): string {
   return crypto.randomUUID()
+}
+
+// ---- row <-> record mapping ------------------------------------------------
+
+export interface ClassRow {
+  id: string
+  teacher_id: string
+  name: string
+  color_theme: string
+  school_year: string
+  archived: boolean
+  created_at: EpochMs
+}
+
+export interface StudentRow {
+  id: string
+  teacher_id?: string
+  class_id: string
+  first_name: string
+  last_name: string
+  grade: string
+  student_id: string | null
+  active: boolean
+  created_at: EpochMs
+}
+
+export interface SessionRow {
+  id: string
+  teacher_id?: string
+  student_id: string
+  class_id: string
+  school_year: string
+  check_in_at: EpochMs
+  check_out_at: EpochMs | null
+  duration_ms: number | null
+  needs_review: boolean
+}
+
+export function toClass(row: ClassRow): Class {
+  return {
+    id: row.id,
+    teacherId: row.teacher_id,
+    name: row.name,
+    colorTheme: row.color_theme,
+    schoolYear: row.school_year,
+    archived: row.archived,
+    createdAt: Number(row.created_at),
+  }
+}
+
+export function classToRow(record: Class): ClassRow {
+  return {
+    id: record.id,
+    teacher_id: record.teacherId,
+    name: record.name,
+    color_theme: record.colorTheme,
+    school_year: record.schoolYear,
+    archived: record.archived,
+    created_at: record.createdAt,
+  }
+}
+
+export function toStudent(row: StudentRow): Student {
+  return {
+    id: row.id,
+    classId: row.class_id,
+    firstName: row.first_name,
+    lastName: row.last_name,
+    grade: row.grade,
+    ...(row.student_id ? { studentId: row.student_id } : {}),
+    active: row.active,
+    createdAt: Number(row.created_at),
+  }
+}
+
+export function studentToRow(record: Student): StudentRow {
+  return {
+    id: record.id,
+    class_id: record.classId,
+    first_name: record.firstName,
+    last_name: record.lastName,
+    grade: record.grade,
+    student_id: record.studentId ?? null,
+    active: record.active,
+    created_at: record.createdAt,
+  }
+}
+
+export function toSession(row: SessionRow): Session {
+  return {
+    id: row.id,
+    studentId: row.student_id,
+    classId: row.class_id,
+    schoolYear: row.school_year,
+    checkInAt: Number(row.check_in_at),
+    checkOutAt: row.check_out_at === null ? null : Number(row.check_out_at),
+    durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
+    needsReview: row.needs_review,
+  }
+}
+
+export function sessionToRow(record: Session): SessionRow {
+  return {
+    id: record.id,
+    student_id: record.studentId,
+    class_id: record.classId,
+    school_year: record.schoolYear,
+    check_in_at: record.checkInAt,
+    check_out_at: record.checkOutAt,
+    duration_ms: record.durationMs,
+    needs_review: record.needsReview,
+  }
+}
+
+const PAGE_SIZE = 1000
+
+/**
+ * Reads every row a query matches. The API returns at most 1,000 rows per
+ * request, and a year of sessions is several times that, so a plain select
+ * would silently truncate an export. `build` must apply a stable `.order()`.
+ */
+export async function fetchAll<T>(
+  description: string,
+  build: (from: number, to: number) => PromiseLike<QueryResult<T[]>>,
+): Promise<T[]> {
+  const rows: T[] = []
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const page = await run(description, build(from, from + PAGE_SIZE - 1))
+    rows.push(...page)
+    if (page.length < PAGE_SIZE) return rows
+  }
 }

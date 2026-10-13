@@ -1,22 +1,20 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   checkIn,
   checkOut,
   createClass,
   createStudent,
-  createTeacher,
   getSetting,
   listSchoolYears,
   listSessionsForSchoolYear,
   type Class,
 } from '../db'
-import { resetDBConnectionForTests } from '../db/schema'
 import { localTimeOnDay } from '../domain'
 import { DEFERRED_YEARS_SETTING, useYearEnd } from '../hooks/useYearEnd'
 import { YearEndGate } from './YearEndGate'
+import { signInTeacher } from '../test/helpers'
 
 const LAST_YEAR = '2025-2026'
 const THIS_YEAR = '2026-2027'
@@ -46,16 +44,10 @@ vi.mock('../export/download', () => ({
 let teacherId: string
 
 beforeEach(async () => {
-  globalThis.indexedDB = new IDBFactory()
-  globalThis.IDBKeyRange = IDBKeyRange
-  resetDBConnectionForTests()
-  backupWrites.clear()
+    backupWrites.clear()
   downloads.length = 0
 
-  const teacher = await createTeacher(
-    { displayName: 'Amanda', passwordHash: '', salt: '', iterations: 0, recoveryHash: '' },
-    MAY,
-  )
+  const teacher = signInTeacher()
   teacherId = teacher.id
 })
 

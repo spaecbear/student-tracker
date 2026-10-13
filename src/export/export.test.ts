@@ -1,18 +1,16 @@
-import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   checkIn,
   checkOut,
   createClass,
   createStudent,
-  createTeacher,
   deactivateStudent,
   type Class,
 } from '../db'
-import { resetDBConnectionForTests } from '../db/schema'
 import { localTimeOnDay, schoolYearForDate } from '../domain'
 import { buildExport, loadExportInput } from './buildExport'
 import { downloadCsv } from './download'
+import { signInTeacher } from '../test/helpers'
 
 const DAY = 86_400_000
 const TODAY = new Date(2026, 8, 15, 12).getTime()
@@ -22,14 +20,8 @@ const YEAR = schoolYearForDate(TODAY)
 let cls: Class
 
 beforeEach(async () => {
-  globalThis.indexedDB = new IDBFactory()
-  globalThis.IDBKeyRange = IDBKeyRange
-  resetDBConnectionForTests()
-
-  const teacher = await createTeacher(
-    { displayName: 'Amanda', passwordHash: '', salt: '', iterations: 0, recoveryHash: '' },
-    TODAY,
-  )
+  
+  const teacher = signInTeacher()
   cls = await createClass(
     { teacherId: teacher.id, name: 'Period 3 Biology', colorTheme: 'teal', schoolYear: YEAR },
     TODAY,

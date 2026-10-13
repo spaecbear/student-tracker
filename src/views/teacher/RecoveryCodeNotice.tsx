@@ -8,7 +8,7 @@ interface Props {
 }
 
 /**
- * Shown once, immediately after the password is set. Nothing on this device
+ * Shown once, immediately after the password is set. Nothing in the app
  * can recover the password without it, so the teacher has to confirm they
  * actually wrote it down before the dialog closes.
  */
@@ -40,8 +40,8 @@ export function RecoveryCodeNotice({ code, onAcknowledge }: Props) {
           className="mt-1 size-5"
         />
         <span>
-          I have written this code somewhere outside this device. There is no server that can
-          reset it for me.
+          I have written this code down somewhere safe. I need it to get back in if I forget my
+          password.
         </span>
       </label>
     </Modal>

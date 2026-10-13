@@ -151,7 +151,7 @@ export function YearEndGate({ yearEnd, onFinished }: Props) {
 
         <Step index={3} title="Clear last year" active={stage === 'exported' && confirmed}>
           <p style={{ color: 'var(--text-muted)' }}>
-            Deletes last year's classes, rosters, and sessions from this device. This cannot be
+            Deletes last year's classes, rosters, and sessions from your account. This cannot be
             undone.
           </p>
           <Button

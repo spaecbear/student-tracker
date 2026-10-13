@@ -1,4 +1,4 @@
-import { newId, withDB } from './schema'
+import { db, newId, run, studentToRow, toStudent, type StudentRow } from './schema'
 import type { EpochMs, Student } from './types'
 
 export type NewStudent = Omit<Student, 'id' | 'createdAt' | 'active'> & { active?: boolean }
@@ -9,29 +9,31 @@ function byName(a: Student, b: Student): number {
   )
 }
 
+function build(input: NewStudent, now: EpochMs): Student {
+  return { active: true, ...input, id: newId(), createdAt: now }
+}
+
 export async function createStudent(input: NewStudent, now: EpochMs): Promise<Student> {
-  const record: Student = { active: true, ...input, id: newId(), createdAt: now }
-  await withDB('create student', (db) => db.put('students', record))
+  const record = build(input, now)
+  await run('create student', db().from('students').insert(studentToRow(record)))
   return record
 }
 
-/** Bulk insert in one transaction so a partial roster import cannot half-apply. */
+/** Bulk insert as one statement, so a partial roster import cannot half-apply. */
 export async function createStudents(inputs: NewStudent[], now: EpochMs): Promise<Student[]> {
-  const records: Student[] = inputs.map((input) => ({
-    active: true,
-    ...input,
-    id: newId(),
-    createdAt: now,
-  }))
-  await withDB('bulk create students', async (db) => {
-    const tx = db.transaction('students', 'readwrite')
-    await Promise.all([...records.map((r) => tx.store.put(r)), tx.done])
-  })
+  const records = inputs.map((input) => build(input, now))
+  if (records.length > 0) {
+    await run('bulk create students', db().from('students').insert(records.map(studentToRow)))
+  }
   return records
 }
 
-export function getStudent(id: string): Promise<Student | undefined> {
-  return withDB('get student', (db) => db.get('students', id))
+export async function getStudent(id: string): Promise<Student | undefined> {
+  const row = await run(
+    'get student',
+    db().from('students').select('*').eq('id', id).maybeSingle<StudentRow>(),
+  )
+  return row ? toStudent(row) : undefined
 }
 
 /** Roster for a class, sorted by last name. Soft-deleted students are excluded by default. */
@@ -39,24 +41,23 @@ export async function listStudents(
   classId: string,
   options: { includeInactive?: boolean } = {},
 ): Promise<Student[]> {
-  const rows = await withDB('list students', (db) =>
-    db.getAllFromIndex('students', 'by-class', classId),
+  const rows = await run(
+    'list students',
+    db().from('students').select('*').eq('class_id', classId).returns<StudentRow[]>(),
   )
-  const visible = options.includeInactive ? rows : rows.filter((s) => s.active)
-  return visible.sort(byName)
+  const all = rows.map(toStudent)
+  return (options.includeInactive ? all : all.filter((s) => s.active)).sort(byName)
 }
 
 export async function updateStudent(
   id: string,
   patch: Partial<Omit<Student, 'id' | 'createdAt'>>,
 ): Promise<Student> {
-  return withDB('update student', async (db) => {
-    const existing = await db.get('students', id)
-    if (!existing) throw new Error(`No student with id ${id}`)
-    const updated: Student = { ...existing, ...patch }
-    await db.put('students', updated)
-    return updated
-  })
+  const existing = await getStudent(id)
+  if (!existing) throw new Error(`No student with id ${id}`)
+  const updated: Student = { ...existing, ...patch }
+  await run('update student', db().from('students').update(studentToRow(updated)).eq('id', id))
+  return updated
 }
 
 /** Soft delete: the card disappears, the session history stays intact. */
@@ -69,19 +70,9 @@ export function reactivateStudent(id: string): Promise<Student> {
 }
 
 /**
- * Hard delete. Removes the student and every session they own.
+ * Hard delete. Removes the student and, by cascade, every session they own.
  * Only ever called behind an explicit confirmation in the teacher view.
  */
 export async function deleteStudentPermanently(id: string): Promise<void> {
-  await withDB('permanently delete student', async (db) => {
-    const tx = db.transaction(['students', 'sessions'], 'readwrite')
-    const sessionStore = tx.objectStore('sessions')
-    const index = sessionStore.index('by-student-open')
-    const keys = await index.getAllKeys(IDBKeyRange.bound([id, 0], [id, 1]))
-    await Promise.all([
-      ...keys.map((key) => sessionStore.delete(key)),
-      tx.objectStore('students').delete(id),
-      tx.done,
-    ])
-  })
+  await run('permanently delete student', db().from('students').delete().eq('id', id))
 }
